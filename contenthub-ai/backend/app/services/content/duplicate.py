@@ -6,11 +6,11 @@ from collections.abc import Iterable
 
 from rapidfuzz import fuzz
 
-from app.models.source_article import SourceArticle
+from app.models.website_content import WebsiteContent
 
 
 def compute_content_hash(title: str, markdown_content: str) -> str:
-    """Compute a deterministic SHA-256 hash over normalized article title and Markdown body."""
+    """Compute a deterministic SHA-256 hash over normalized content title and Markdown body."""
     normalized_title = re.sub(r"\s+", " ", (title or "").strip().lower())
     normalized_body = re.sub(r"\s+", " ", (markdown_content or "").strip().lower())
     payload = f"{normalized_title}\n{normalized_body}".encode()
@@ -21,8 +21,8 @@ def find_near_duplicate(
     *,
     title: str,
     markdown_content: str,
-    existing_articles: Iterable[SourceArticle],
-    exclude_article_id: int | None = None,
+    existing_contents: Iterable[WebsiteContent],
+    exclude_content_id: int | None = None,
     threshold: float = 88.0,
 ) -> tuple[int, float] | None:
     """Optional RapidFuzz near-duplicate detector (advisory only; never auto-merges or deletes)."""
@@ -33,16 +33,16 @@ def find_near_duplicate(
     best_match_id: int | None = None
     best_score = 0.0
 
-    for article in existing_articles:
-        if exclude_article_id is not None and article.id == exclude_article_id:
+    for item in existing_contents:
+        if exclude_content_id is not None and item.id == exclude_content_id:
             continue
-        other = f"{article.title}\n{(article.markdown_content or '')[:2000]}".strip().lower()
+        other = f"{item.title}\n{(item.markdown_content or '')[:2000]}".strip().lower()
         if len(other) < 40:
             continue
         score = float(fuzz.token_set_ratio(sample, other))
         if score >= threshold and score > best_score:
             best_score = score
-            best_match_id = article.id
+            best_match_id = item.id
 
     if best_match_id is None:
         return None

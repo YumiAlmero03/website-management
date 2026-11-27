@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import MYSQL_TABLE_ARGS, Base, utc_now_naive
@@ -32,6 +33,12 @@ class WebsiteScanLog(Base):
         default="auto",
         server_default="auto",
     )
+    scan_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="full",
+        server_default="full",
+    )
     trigger_type: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -45,6 +52,12 @@ class WebsiteScanLog(Base):
         server_default=text("0"),
     )
     articles_processed: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    urls_pending_extraction: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0,
@@ -80,6 +93,41 @@ class WebsiteScanLog(Base):
         default=0,
         server_default=text("0"),
     )
+    excluded_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    homepage_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    page_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    blog_post_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    other_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    current_source: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    current_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    discovered_sitemaps_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    sources_completed_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    sources_failed_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

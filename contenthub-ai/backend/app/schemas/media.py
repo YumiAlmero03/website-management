@@ -9,7 +9,7 @@ from app.schemas.common import PaginationMeta
 
 class MediaAssetResponse(BaseModel):
     id: int
-    brand_id: int | None = None
+    website_id: int | None = None
     file_name: str
     file_path: str | None = None
     source_url: str | None = None

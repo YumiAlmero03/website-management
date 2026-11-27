@@ -29,16 +29,14 @@ TRACKING_QUERY_PARAMS: frozenset[str] = frozenset(
     }
 )
 
+# System binary/admin URLs excluded by default; homepage `/`, `/category/*`, `/tag/*`,
+# and `/author/*` are NOT excluded so they can be discovered and classified properly.
 DEFAULT_EXCLUDED_PATTERNS: tuple[str, ...] = (
     "/wp-admin/*",
     "/wp-login*",
     "/wp-content/*",
     "/wp-includes/*",
-    "/category/*",
-    "/categories/*",
-    "/tag/*",
-    "/tags/*",
-    "/author/*",
+    "/wp-json/*",
     "/search*",
     "/login*",
     "/logout*",
@@ -53,10 +51,12 @@ DEFAULT_EXCLUDED_PATTERNS: tuple[str, ...] = (
     "*.gif",
     "*.webp",
     "*.svg",
+    "*.ico",
     "*.pdf",
     "*.zip",
     "*.css",
     "*.js",
+    "*.woff*",
 )
 
 _SAFE_PATTERN_REGEX = re.compile(r"^[A-Za-z0-9/_\-.*?=]+$")
@@ -153,7 +153,7 @@ def matches_url_patterns(
     exclude_patterns: list[str] | None = None,
     apply_default_excludes: bool = True,
 ) -> bool:
-    """Evaluate safe glob include/exclude rules against a URL path and query."""
+    """Evaluate safe glob include/exclude rules against a URL path and query (homepage allowed)."""
     parsed = urlparse(url)
     path = parsed.path or "/"
     path_with_query = f"{path}?{parsed.query}" if parsed.query else path
@@ -167,17 +167,18 @@ def matches_url_patterns(
             return False
 
     includes = [p.strip() for p in (include_patterns or []) if p.strip()]
-    if not includes:
-        return path != "/"
+    if not includes or path == "/":
+        return True
 
     return any(_glob_match(pattern, path, path_with_query) for pattern in includes)
 
 
 def _glob_match(pattern: str, path: str, path_with_query: str) -> bool:
-    lower_pat = pattern.lower()
-    lower_path = path.lower()
+    lower_pat = (
+        pattern.lower().rstrip("/")
+        if pattern != "/" and not pattern.endswith("/*/")
+        else pattern.lower()
+    )
+    lower_path = path.lower().rstrip("/") if path != "/" else "/"
     lower_full = path_with_query.lower()
-    if fnmatch.fnmatch(lower_path, lower_pat) or fnmatch.fnmatch(lower_full, lower_pat):
-        return True
-    # Match `/blog/*` against `/blog` when trailing slash was normalized away.
-    return bool(lower_pat.endswith("/*") and lower_path == lower_pat[:-2])
+    return bool(fnmatch.fnmatch(lower_path, lower_pat) or fnmatch.fnmatch(lower_full, lower_pat))

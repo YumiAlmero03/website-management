@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -25,16 +26,17 @@ LONG_TEXT = Text().with_variant(mysql.LONGTEXT(), "mysql")
 MEDIUM_TEXT = Text().with_variant(mysql.MEDIUMTEXT(), "mysql")
 
 
-class SourceArticle(TimestampMixin, Base):
-    __tablename__ = "source_articles"
+class WebsiteContent(TimestampMixin, Base):
+    __tablename__ = "website_contents"
     __table_args__ = (
-        UniqueConstraint("website_id", "url_hash", name="uq_source_articles_website_url_hash"),
-        Index("ix_source_articles_website_id", "website_id"),
-        Index("ix_source_articles_content_hash", "content_hash"),
-        Index("ix_source_articles_published_at", "published_at"),
-        Index("ix_source_articles_status", "status"),
+        UniqueConstraint("website_id", "url_hash", name="uq_website_contents_website_url_hash"),
+        Index("ix_website_contents_website_type", "website_id", "content_type"),
+        Index("ix_website_contents_extraction_status", "website_id", "extraction_status"),
+        Index("ix_website_contents_content_hash", "content_hash"),
+        Index("ix_website_contents_published_at", "published_at"),
+        Index("ix_website_contents_status", "status"),
         Index(
-            "ft_source_articles_search",
+            "ft_website_contents_search",
             "title",
             "meta_description",
             "markdown_content",
@@ -47,7 +49,9 @@ class SourceArticle(TimestampMixin, Base):
     website_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey(
-            "websites.id", name="fk_source_articles_website_id_websites", ondelete="RESTRICT"
+            "websites.id",
+            name="fk_website_contents_website_id_websites",
+            ondelete="RESTRICT",
         ),
         nullable=False,
     )
@@ -55,19 +59,47 @@ class SourceArticle(TimestampMixin, Base):
         BigInteger,
         ForeignKey(
             "media_assets.id",
-            name="fk_source_articles_featured_media_id_media_assets",
+            name="fk_website_contents_featured_media_id_media_assets",
             ondelete="SET NULL",
         ),
         nullable=True,
     )
-    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="page",
+        server_default="page",
+    )
+    classification_method: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="default_rule",
+        server_default="default_rule",
+    )
+    manual_classification_override: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
+    is_excluded: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
+    url: Mapped[str] = mapped_column(String(1000), nullable=False)
     canonical_url: Mapped[str] = mapped_column(String(1000), nullable=False)
     url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
     author: Mapped[str | None] = mapped_column(String(150), nullable=True)
     meta_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    h1_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
     original_content: Mapped[str | None] = mapped_column(LONG_TEXT, nullable=True)
+    extracted_content: Mapped[str | None] = mapped_column(LONG_TEXT, nullable=True)
     markdown_content: Mapped[str | None] = mapped_column(LONG_TEXT, nullable=True)
     optimized_context: Mapped[str | None] = mapped_column(MEDIUM_TEXT, nullable=True)
+    structured_data_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     categories: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -79,12 +111,21 @@ class SourceArticle(TimestampMixin, Base):
         default=0,
         server_default=text("0"),
     )
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extraction_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="extracted",
+        server_default="extracted",
+    )
+    extraction_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
         default="extracted",
         server_default="extracted",
     )
+    discovery_sources: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     is_historical_baseline: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -94,8 +135,8 @@ class SourceArticle(TimestampMixin, Base):
     near_duplicate_of_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey(
-            "source_articles.id",
-            name="fk_source_articles_near_duplicate_of_id",
+            "website_contents.id",
+            name="fk_website_contents_near_duplicate_of_id",
             ondelete="SET NULL",
         ),
         nullable=True,
@@ -103,7 +144,13 @@ class SourceArticle(TimestampMixin, Base):
     near_duplicate_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
-    discovered_at: Mapped[datetime] = mapped_column(
+    first_discovered_at: Mapped[datetime] = mapped_column(
+        DateTime(),
+        nullable=False,
+        default=utc_now_naive,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    last_discovered_at: Mapped[datetime] = mapped_column(
         DateTime(),
         nullable=False,
         default=utc_now_naive,

@@ -17,7 +17,7 @@ ARTICLE_JSONLD_TYPES: frozenset[str] = frozenset(
 
 
 class HtmlDiscoveryAdapter:
-    """Discovers article URLs from standard HTML pages, JSON-LD, Open Graph, and rel=next links."""
+    """Discovers internal URLs from HTML pages, navigation, JSON-LD, and rel=next links."""
 
     method_name = "html"
 
@@ -29,9 +29,11 @@ class HtmlDiscoveryAdapter:
         *,
         domain: str,
         endpoint_url: str,
-        max_urls: int,
+        max_urls: int = 5000,
         etag: str | None = None,
         last_modified: str | None = None,
+        include_nav_links: bool = False,
+        max_pages: int = 10,
     ) -> DiscoveryResult:
         candidates: list[DiscoveredCandidate] = []
         seen: set[str] = set()
@@ -41,7 +43,7 @@ class HtmlDiscoveryAdapter:
         latest_etag = etag
         latest_modified = last_modified
 
-        while current_url and len(candidates) < max_urls and page < 5:
+        while current_url and len(candidates) < max_urls and page < max_pages:
             if current_url in visited_pages:
                 break
             visited_pages.add(current_url)
@@ -65,6 +67,7 @@ class HtmlDiscoveryAdapter:
                     not_modified=True,
                     etag=response.etag,
                     last_modified=response.last_modified,
+                    status_code=304,
                 )
 
             if response.status_code != 200:
@@ -81,7 +84,13 @@ class HtmlDiscoveryAdapter:
                 soup, response.final_url, domain, candidates, seen, max_urls
             )
             self._collect_anchor_candidates(
-                soup, response.final_url, domain, candidates, seen, max_urls
+                soup,
+                response.final_url,
+                domain,
+                candidates,
+                seen,
+                max_urls,
+                include_nav_links=include_nav_links,
             )
             current_url = self._find_next_page(soup, response.final_url, domain)
 
@@ -90,6 +99,7 @@ class HtmlDiscoveryAdapter:
             candidates=candidates,
             etag=latest_etag,
             last_modified=latest_modified,
+            status_code=200,
         )
 
     def _collect_json_ld_candidates(
@@ -112,8 +122,10 @@ class HtmlDiscoveryAdapter:
             for node in self._iter_jsonld_nodes(data):
                 if len(candidates) >= max_urls:
                     return
-                node_type = str(node.get("@type") or "").lower()
-                if node_type not in ARTICLE_JSONLD_TYPES:
+                raw_type = node.get("@type")
+                type_list = raw_type if isinstance(raw_type, list) else [raw_type]
+                norm_types = [str(t) for t in type_list if t]
+                if not ({t.lower() for t in norm_types} & ARTICLE_JSONLD_TYPES):
                     continue
                 raw_url = node.get("url") or (
                     node.get("mainEntityOfPage", {}).get("@id")
@@ -129,6 +141,7 @@ class HtmlDiscoveryAdapter:
                     title=str(node.get("headline") or node.get("name") or "").strip() or None,
                     candidates=candidates,
                     seen=seen,
+                    jsonld_types=norm_types,
                 )
 
     def _collect_anchor_candidates(
@@ -139,13 +152,23 @@ class HtmlDiscoveryAdapter:
         candidates: list[DiscoveredCandidate],
         seen: set[str],
         max_urls: int,
+        *,
+        include_nav_links: bool = False,
     ) -> None:
-        # Remove obvious chrome so nav/footer/header boilerplate links are ignored.
-        for chrome in soup.find_all(["nav", "footer", "aside", "script", "style"]):
+        for chrome in soup.find_all(["script", "style", "noscript"]):
             chrome.decompose()
 
-        article_anchors = soup.select("article a[href], main a[href], h2 a[href], h3 a[href]")
-        anchors = article_anchors if article_anchors else soup.find_all("a", href=True)
+        if not include_nav_links:
+            for chrome in soup.find_all(["nav", "footer", "aside"]):
+                chrome.decompose()
+            article_anchors = soup.select("article a[href], main a[href], h2 a[href], h3 a[href]")
+            anchors = article_anchors if article_anchors else soup.find_all("a", href=True)
+        else:
+            # Prioritize main/article links first, then collect navigation/footer internal links
+            # so regular pages (/about-us, /promos, /blogs, /slot-games) are never missed.
+            prioritized = soup.select("article a[href], main a[href], h2 a[href], h3 a[href]")
+            all_anchors = soup.find_all("a", href=True)
+            anchors = [*prioritized, *all_anchors]
 
         for anchor in anchors:
             if len(candidates) >= max_urls:
@@ -172,6 +195,7 @@ class HtmlDiscoveryAdapter:
         title: str | None,
         candidates: list[DiscoveredCandidate],
         seen: set[str],
+        jsonld_types: list[str] | None = None,
     ) -> None:
         try:
             norm = normalize_url(raw_url, base_url=base_url)
@@ -186,6 +210,7 @@ class HtmlDiscoveryAdapter:
                 normalized_url=norm,
                 source_method=self.method_name,
                 title=title,
+                jsonld_types=list(jsonld_types or []),
             )
         )
 

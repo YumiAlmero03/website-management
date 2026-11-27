@@ -16,7 +16,7 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 def get_dashboard_summary(
     _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
     dashboard_service: Annotated[DashboardService, Depends(get_dashboard_service)],
-    brand_id: int | None = Query(default=None, ge=1),
     website_id: int | None = Query(default=None, ge=1),
+    category_id: int | None = Query(default=None, ge=1),
 ) -> DashboardSummaryResponse:
-    return dashboard_service.get_summary(brand_id=brand_id, website_id=website_id)
+    return dashboard_service.get_summary(website_id=website_id, category_id=category_id)

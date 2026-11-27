@@ -13,6 +13,8 @@ from app.schemas.media import MediaAssetListResponse, MediaAssetResponse
 
 
 class MediaService:
+    """Service layer for website-scoped media assets and safe local image delivery."""
+
     def __init__(
         self,
         *,
@@ -23,11 +25,11 @@ class MediaService:
         self.media_repo = media_repo
 
     @staticmethod
-    def _to_response(asset: MediaAsset) -> MediaAssetResponse:
+    def to_response(asset: MediaAsset) -> MediaAssetResponse:
         now = utc_now()
         return MediaAssetResponse(
             id=asset.id,
-            brand_id=asset.brand_id,
+            website_id=asset.website_id,
             file_name=asset.file_name,
             file_path=asset.file_path,
             source_url=asset.source_url,
@@ -45,16 +47,16 @@ class MediaService:
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        website_id: int | None = None,
     ) -> MediaAssetListResponse:
         rows, total = self.media_repo.list_paginated(
             page=page,
             page_size=page_size,
-            brand_id=brand_id,
+            website_id=website_id,
         )
         total_pages = math.ceil(total / page_size) if total > 0 else 0
         return MediaAssetListResponse(
-            items=[self._to_response(row) for row in rows],
+            items=[self.to_response(row) for row in rows],
             meta=PaginationMeta(
                 page=page,
                 page_size=page_size,
@@ -67,7 +69,7 @@ class MediaService:
         asset = self.media_repo.get_by_id(media_id)
         if asset is None:
             raise NotFoundError(f"Media asset #{media_id} not found.")
-        return self._to_response(asset)
+        return self.to_response(asset)
 
     def resolve_local_file(self, media_id: int) -> tuple[Path, str]:
         asset = self.media_repo.get_by_id(media_id)

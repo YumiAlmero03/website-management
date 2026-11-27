@@ -13,8 +13,8 @@ from app.config import Settings
 from app.core.dependencies import (
     get_activity_log_repo,
     get_app_settings,
-    get_article_repo,
-    get_brand_repo,
+    get_category_repo,
+    get_content_repo,
     get_db_health_checker,
     get_http_fetcher,
     get_login_rate_limiter,
@@ -25,6 +25,7 @@ from app.core.dependencies import (
     get_settings_repo,
     get_user_repo,
     get_website_repo,
+    get_website_source_repo,
 )
 from app.core.logging import redact_mapping, redact_text
 from app.core.rate_limit import SlidingWindowRateLimiter
@@ -32,15 +33,19 @@ from app.database import DatabaseDiagnostic
 from app.main import create_app
 from app.models.activity_log import ActivityLog
 from app.models.base import ensure_utc, utc_now_naive
-from app.models.brand import Brand
+from app.models.content_revision import ContentRevision
 from app.models.media_asset import MediaAsset
 from app.models.session import AdminSession
 from app.models.setting import ApplicationSetting
-from app.models.source_article import SourceArticle
-from app.models.source_article_revision import SourceArticleRevision
 from app.models.user import User
 from app.models.website import Website
+from app.models.website_category import WebsiteCategory
+from app.models.website_content import WebsiteContent
+from app.models.website_discovery_source import WebsiteDiscoverySource
+from app.models.website_scan_item import WebsiteScanItem
 from app.models.website_scan_log import WebsiteScanLog
+from app.models.website_url_rule import WebsiteUrlRule
+from app.repositories.website_source_repo import hash_endpoint
 from app.services.auth_service import AuthService
 from app.services.scanner.security import SafeHttpFetcher
 
@@ -270,75 +275,79 @@ class InMemoryActivityLogRepository:
         return len(self._items)
 
 
-class InMemoryBrandRepository:
-    def __init__(self) -> None:
-        self._items: dict[int, Brand] = {}
+class InMemoryWebsiteCategoryRepository:
+    def __init__(self, *, seed_defaults: bool = True) -> None:
+        self._items: dict[int, WebsiteCategory] = {}
         self._seq = 0
-
-    def list_paginated(
-        self,
-        *,
-        page: int,
-        page_size: int,
-        search: str | None = None,
-        is_active: bool | None = None,
-        language: str | None = None,
-    ) -> tuple[list[Brand], int]:
-        rows = sorted(self._items.values(), key=lambda r: r.id, reverse=True)
-        if is_active is not None:
-            rows = [r for r in rows if r.is_active == is_active]
-        if language:
-            rows = [r for r in rows if r.primary_language == language.strip()]
-        if search:
-            term = search.strip().lower()
-            rows = [
-                r
-                for r in rows
-                if term in r.name.lower()
-                or term in r.slug.lower()
-                or term in (r.description or "").lower()
-                or term in (r.target_country or "").lower()
+        if seed_defaults:
+            defaults = [
+                ("Sports Web", "sports-web", "Sports news, odds, and analysis publishers", 10),
+                ("Casino", "casino", "Online casino, slots, and gaming portals", 20),
+                ("Brand", "brand", "Official brand websites and corporate hubs", 30),
+                ("Illegal Brand", "illegal-brand", "Flagged or unverified brand domains", 40),
+                ("Technology", "technology", "Software, SaaS, and tech publishers", 50),
+                ("E-commerce", "e-commerce", "Online stores and product catalogs", 60),
+                ("News", "news", "Editorial news and magazine outlets", 70),
+                ("Other", "other", "General or uncategorized websites", 80),
             ]
-        total = len(rows)
-        start = (page - 1) * page_size
-        return rows[start : start + page_size], total
+            for name, slug, desc, order in defaults:
+                self.create(
+                    {
+                        "name": name,
+                        "slug": slug,
+                        "description": desc,
+                        "is_archived": False,
+                        "sort_order": order,
+                    }
+                )
 
-    def list_all(self) -> list[Brand]:
-        return sorted(self._items.values(), key=lambda r: r.name.lower())
+    def list_all(self, *, include_archived: bool = False) -> list[WebsiteCategory]:
+        rows = list(self._items.values())
+        if not include_archived:
+            rows = [r for r in rows if not r.is_archived]
+        rows.sort(key=lambda r: (r.sort_order, r.name.lower()))
+        return rows
 
-    def get_by_id(self, brand_id: int) -> Brand | None:
-        return self._items.get(brand_id)
+    def get_by_id(self, category_id: int) -> WebsiteCategory | None:
+        return self._items.get(category_id)
 
-    def get_by_slug(self, slug: str) -> Brand | None:
+    def get_by_slug(self, slug: str) -> WebsiteCategory | None:
         target = slug.strip().lower()
         for row in self._items.values():
             if row.slug == target:
                 return row
         return None
 
-    def count_all(self, *, is_active: bool | None = None) -> int:
-        if is_active is None:
-            return len(self._items)
-        return sum(1 for r in self._items.values() if r.is_active == is_active)
+    def get_by_name(self, name: str) -> WebsiteCategory | None:
+        target = name.strip().lower()
+        for row in self._items.values():
+            if row.name.lower() == target:
+                return row
+        return None
 
-    def create(self, data: dict[str, Any]) -> Brand:
+    def count_all(self, *, include_archived: bool = False) -> int:
+        if include_archived:
+            return len(self._items)
+        return sum(1 for r in self._items.values() if not r.is_archived)
+
+    def create(self, data: dict[str, Any]) -> WebsiteCategory:
         self._seq += 1
         now = utc_now_naive()
-        brand = Brand(id=self._seq, **data, created_at=now, updated_at=now)
-        self._items[brand.id] = brand
-        return brand
+        cat = WebsiteCategory(id=self._seq, **data, created_at=now, updated_at=now)
+        self._items[cat.id] = cat
+        return cat
 
-    def update(self, brand_id: int, data: dict[str, Any]) -> Brand | None:
-        brand = self._items.get(brand_id)
-        if brand is None:
+    def update(self, category_id: int, data: dict[str, Any]) -> WebsiteCategory | None:
+        cat = self._items.get(category_id)
+        if cat is None:
             return None
         for key, value in data.items():
-            setattr(brand, key, value)
-        brand.updated_at = utc_now_naive()
-        return brand
+            setattr(cat, key, value)
+        cat.updated_at = utc_now_naive()
+        return cat
 
-    def delete(self, brand_id: int) -> bool:
-        return self._items.pop(brand_id, None) is not None
+    def delete(self, category_id: int) -> bool:
+        return self._items.pop(category_id, None) is not None
 
 
 class InMemoryWebsiteRepository:
@@ -351,27 +360,30 @@ class InMemoryWebsiteRepository:
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
         website_type: str | None = None,
         search: str | None = None,
     ) -> tuple[list[Website], int]:
         rows = sorted(self._items.values(), key=lambda r: r.id, reverse=True)
-        if brand_id is not None:
-            rows = [r for r in rows if r.brand_id == brand_id]
+        if category_id is not None:
+            rows = [r for r in rows if r.category_id == category_id]
         if status:
             rows = [r for r in rows if r.status == status]
         if website_type:
             rows = [r for r in rows if r.website_type == website_type]
         if search:
             term = search.strip().lower()
-            rows = [r for r in rows if term in r.name.lower() or term in r.domain.lower()]
+            rows = [
+                r
+                for r in rows
+                if term in r.name.lower()
+                or term in (r.brand_name or "").lower()
+                or term in r.domain.lower()
+            ]
         total = len(rows)
         start = (page - 1) * page_size
         return rows[start : start + page_size], total
-
-    def list_by_brand(self, brand_id: int) -> list[Website]:
-        return [r for r in self._items.values() if r.brand_id == brand_id]
 
     def list_due_for_scan(self, *, now: datetime) -> list[Website]:
         naive_now = now.replace(tzinfo=None)
@@ -386,28 +398,28 @@ class InMemoryWebsiteRepository:
     def get_by_id(self, website_id: int) -> Website | None:
         return self._items.get(website_id)
 
-    def get_by_brand_and_domain(self, brand_id: int, domain: str) -> Website | None:
+    def get_by_domain(self, domain: str) -> Website | None:
         target = domain.strip().lower()
         for row in self._items.values():
-            if row.brand_id == brand_id and row.domain == target:
+            if row.domain == target:
                 return row
         return None
 
-    def count_by_brand(self, brand_id: int) -> int:
-        return sum(1 for r in self._items.values() if r.brand_id == brand_id)
+    def count_by_category(self, category_id: int) -> int:
+        return sum(1 for r in self._items.values() if r.category_id == category_id)
 
     def count_all(
         self,
         *,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
     ) -> int:
         rows = list(self._items.values())
-        if brand_id is not None:
-            rows = [r for r in rows if r.brand_id == brand_id]
         if website_id is not None:
             rows = [r for r in rows if r.id == website_id]
+        if category_id is not None:
+            rows = [r for r in rows if r.category_id == category_id]
         if status is not None:
             rows = [r for r in rows if r.status == status]
         return len(rows)
@@ -416,20 +428,33 @@ class InMemoryWebsiteRepository:
         self,
         *,
         now: datetime,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
     ) -> int:
         rows = self.list_due_for_scan(now=now)
-        if brand_id is not None:
-            rows = [r for r in rows if r.brand_id == brand_id]
         if website_id is not None:
             rows = [r for r in rows if r.id == website_id]
+        if category_id is not None:
+            rows = [r for r in rows if r.category_id == category_id]
         return len(rows)
 
     def create(self, data: dict[str, Any]) -> Website:
         self._seq += 1
         now = utc_now_naive()
         defaults = {
+            "brand_name": data.get("name", "Site"),
+            "primary_language": "en",
+            "secondary_languages": [],
+            "target_keywords": [],
+            "restricted_keywords": [],
+            "default_hashtags": [],
+            "article_url_patterns": [],
+            "excluded_url_patterns": [],
+            "discovery_method": "auto",
+            "single_source_only": False,
+            "scan_interval_minutes": 1440,
+            "crawl_batch_size": 100,
+            "crawl_max_urls_per_run": 1000,
             "initial_scan_completed": False,
             "baseline_mode": "import_existing",
             "auto_scan": True,
@@ -454,43 +479,166 @@ class InMemoryWebsiteRepository:
         return self._items.pop(website_id, None) is not None
 
 
-class InMemoryArticleRepository:
+class InMemoryWebsiteSourceConfigRepository:
+    def __init__(self) -> None:
+        self._sources: dict[int, WebsiteDiscoverySource] = {}
+        self._rules: dict[int, WebsiteUrlRule] = {}
+        self._source_seq = 0
+        self._rule_seq = 0
+
+    def list_sources(
+        self, website_id: int, *, enabled_only: bool = False
+    ) -> list[WebsiteDiscoverySource]:
+        rows = [s for s in self._sources.values() if s.website_id == website_id]
+        if enabled_only:
+            rows = [s for s in rows if s.is_enabled]
+        rows.sort(key=lambda s: s.id)
+        return rows
+
+    def get_source(self, source_id: int) -> WebsiteDiscoverySource | None:
+        return self._sources.get(source_id)
+
+    def get_source_by_endpoint(
+        self, website_id: int, endpoint_url: str
+    ) -> WebsiteDiscoverySource | None:
+        ep_hash = hash_endpoint(endpoint_url)
+        for src in self._sources.values():
+            if src.website_id == website_id and src.endpoint_hash == ep_hash:
+                return src
+        return None
+
+    def upsert_source(
+        self,
+        *,
+        website_id: int,
+        source_type: str,
+        endpoint_url: str,
+        parent_source_id: int | None = None,
+        is_enabled: bool = True,
+    ) -> WebsiteDiscoverySource:
+        clean_ep = endpoint_url.strip()[:1000]
+        existing = self.get_source_by_endpoint(website_id, clean_ep)
+        now = utc_now_naive()
+        if existing is not None:
+            existing.source_type = source_type
+            if parent_source_id is not None and existing.parent_source_id is None:
+                existing.parent_source_id = parent_source_id
+            existing.updated_at = now
+            return existing
+        self._source_seq += 1
+        src = WebsiteDiscoverySource(
+            id=self._source_seq,
+            website_id=website_id,
+            parent_source_id=parent_source_id,
+            source_type=source_type,
+            endpoint_url=clean_ep,
+            endpoint_hash=hash_endpoint(clean_ep),
+            is_enabled=is_enabled,
+            last_urls_found=0,
+            created_at=now,
+            updated_at=now,
+        )
+        self._sources[src.id] = src
+        return src
+
+    def update_source(self, source_id: int, data: dict[str, Any]) -> WebsiteDiscoverySource | None:
+        src = self._sources.get(source_id)
+        if src is None:
+            return None
+        for key, value in data.items():
+            setattr(src, key, value)
+        src.updated_at = utc_now_naive()
+        return src
+
+    def delete_source(self, source_id: int) -> bool:
+        return self._sources.pop(source_id, None) is not None
+
+    def list_rules(self, website_id: int, *, enabled_only: bool = False) -> list[WebsiteUrlRule]:
+        rows = [r for r in self._rules.values() if r.website_id == website_id]
+        if enabled_only:
+            rows = [r for r in rows if r.is_enabled]
+        rows.sort(key=lambda r: (r.priority, r.id))
+        return rows
+
+    def get_rule(self, rule_id: int) -> WebsiteUrlRule | None:
+        return self._rules.get(rule_id)
+
+    def create_rule(self, data: dict[str, Any]) -> WebsiteUrlRule:
+        self._rule_seq += 1
+        now = utc_now_naive()
+        rule = WebsiteUrlRule(id=self._rule_seq, **data, created_at=now, updated_at=now)
+        self._rules[rule.id] = rule
+        return rule
+
+    def update_rule(self, rule_id: int, data: dict[str, Any]) -> WebsiteUrlRule | None:
+        rule = self._rules.get(rule_id)
+        if rule is None:
+            return None
+        for key, value in data.items():
+            setattr(rule, key, value)
+        rule.updated_at = utc_now_naive()
+        return rule
+
+    def delete_rule(self, rule_id: int) -> bool:
+        return self._rules.pop(rule_id, None) is not None
+
+
+class InMemoryContentRepository:
     def __init__(self, website_repo: InMemoryWebsiteRepository) -> None:
         self.website_repo = website_repo
-        self._items: dict[int, SourceArticle] = {}
-        self._revisions: list[SourceArticleRevision] = []
+        self._items: dict[int, WebsiteContent] = {}
+        self._revisions: list[ContentRevision] = []
         self._seq = 0
         self._rev_seq = 0
 
-    def _matches_brand(self, article: SourceArticle, brand_id: int) -> bool:
-        site = self.website_repo.get_by_id(article.website_id)
-        return site is not None and site.brand_id == brand_id
+    def _matches_category(self, content: WebsiteContent, category_id: int) -> bool:
+        site = self.website_repo.get_by_id(content.website_id)
+        return site is not None and site.category_id == category_id
 
     def list_paginated(
         self,
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
+        content_type: str | None = None,
+        content_types: list[str] | None = None,
+        extraction_status: str | None = None,
         language: str | None = None,
-        category: str | None = None,
+        tag_or_category: str | None = None,
         status: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
         change_filter: str | None = None,
-    ) -> tuple[list[SourceArticle], int]:
-        rows = sorted(self._items.values(), key=lambda r: r.id, reverse=True)
-        if brand_id is not None:
-            rows = [r for r in rows if self._matches_brand(r, brand_id)]
+        include_excluded: bool = False,
+        sort_by: str = "last_discovered_at",
+        sort_dir: str = "desc",
+    ) -> tuple[list[WebsiteContent], int]:
+        rows = list(self._items.values())
         if website_id is not None:
             rows = [r for r in rows if r.website_id == website_id]
+        if category_id is not None:
+            rows = [r for r in rows if self._matches_category(r, category_id)]
+        if not include_excluded and status != "excluded":
+            rows = [r for r in rows if not r.is_excluded]
+        if content_type:
+            rows = [r for r in rows if r.content_type == content_type.strip()]
+        elif content_types:
+            rows = [r for r in rows if r.content_type in content_types]
+        if extraction_status:
+            rows = [r for r in rows if r.extraction_status == extraction_status.strip()]
         if language:
             rows = [r for r in rows if (r.language or "") == language.strip()]
-        if category:
-            cat_l = category.strip().lower()
-            rows = [r for r in rows if any(str(c).lower() == cat_l for c in (r.categories or []))]
+        if tag_or_category:
+            needle = tag_or_category.strip().lower()
+            rows = [
+                r
+                for r in rows
+                if any(str(c).lower() == needle for c in (r.categories or []))
+                or any(str(t).lower() == needle for t in (r.tags or []))
+            ]
         if status:
             rows = [r for r in rows if r.status == status.strip()]
         if change_filter == "updated":
@@ -499,10 +647,10 @@ class InMemoryArticleRepository:
             rows = [r for r in rows if r.status in {"discovered", "extracted", "optimized"}]
         if date_from is not None:
             cutoff = date_from.replace(tzinfo=None)
-            rows = [r for r in rows if r.discovered_at >= cutoff]
+            rows = [r for r in rows if r.first_discovered_at >= cutoff]
         if date_to is not None:
             cutoff = date_to.replace(tzinfo=None)
-            rows = [r for r in rows if r.discovered_at <= cutoff]
+            rows = [r for r in rows if r.first_discovered_at <= cutoff]
         if search:
             term = search.strip().lower()
             rows = [
@@ -511,28 +659,95 @@ class InMemoryArticleRepository:
                 if term in r.title.lower()
                 or term in (r.meta_description or "").lower()
                 or term in r.canonical_url.lower()
+                or term in (r.markdown_content or "").lower()
             ]
+        reverse = sort_dir.lower() != "asc"
+        if sort_by == "word_count":
+            rows.sort(key=lambda r: (r.word_count, r.id), reverse=reverse)
+        elif sort_by == "title":
+            rows.sort(key=lambda r: (r.title.lower(), r.id), reverse=reverse)
+        else:
+            rows.sort(key=lambda r: (r.last_discovered_at, r.id), reverse=reverse)
         total = len(rows)
         start = (page - 1) * page_size
         return rows[start : start + page_size], total
 
-    def get_by_id(self, article_id: int) -> SourceArticle | None:
-        return self._items.get(article_id)
-
-    def get_by_website_and_url_hash(
+    def get_stats(
         self,
-        website_id: int,
-        url_hash: str,
-    ) -> SourceArticle | None:
+        *,
+        website_id: int | None = None,
+        category_id: int | None = None,
+        discovered_since: datetime | None = None,
+    ) -> dict[str, int]:
+        rows = list(self._items.values())
+        if website_id is not None:
+            rows = [r for r in rows if r.website_id == website_id]
+        if category_id is not None:
+            rows = [r for r in rows if self._matches_category(r, category_id)]
+        non_excl = [r for r in rows if not r.is_excluded]
+        today_cnt = 0
+        if discovered_since is not None:
+            cutoff = discovered_since.replace(tzinfo=None)
+            today_cnt = sum(1 for r in non_excl if r.first_discovered_at >= cutoff)
+        return {
+            "total_discovered": len(non_excl),
+            "total_extracted": sum(1 for r in non_excl if r.extraction_status == "extracted"),
+            "homepage_count": sum(1 for r in non_excl if r.content_type == "homepage"),
+            "page_count": sum(1 for r in non_excl if r.content_type == "page"),
+            "blog_post_count": sum(1 for r in non_excl if r.content_type == "blog_post"),
+            "blog_index_count": sum(1 for r in non_excl if r.content_type == "blog_index"),
+            "category_count": sum(1 for r in non_excl if r.content_type == "category"),
+            "tag_count": sum(1 for r in non_excl if r.content_type == "tag"),
+            "archive_count": sum(1 for r in non_excl if r.content_type == "archive"),
+            "custom_count": sum(1 for r in non_excl if r.content_type == "custom"),
+            "other_count": sum(
+                1 for r in non_excl if r.content_type in {"category", "tag", "archive", "custom"}
+            ),
+            "pending_count": sum(1 for r in non_excl if r.extraction_status == "pending"),
+            "failed_count": sum(1 for r in non_excl if r.extraction_status == "failed"),
+            "updated_count": sum(1 for r in non_excl if r.status == "updated"),
+            "excluded_count": sum(1 for r in rows if r.is_excluded),
+            "discovered_today_count": today_cnt,
+        }
+
+    def get_by_id(self, content_id: int) -> WebsiteContent | None:
+        return self._items.get(content_id)
+
+    def get_by_website_and_url_hash(self, website_id: int, url_hash: str) -> WebsiteContent | None:
         for row in self._items.values():
             if row.website_id == website_id and row.url_hash == url_hash:
                 return row
         return None
 
-    def list_recent_for_website(self, website_id: int, *, limit: int = 50) -> list[SourceArticle]:
+    def list_recent_for_website(self, website_id: int, *, limit: int = 50) -> list[WebsiteContent]:
         rows = [r for r in self._items.values() if r.website_id == website_id]
         rows.sort(key=lambda r: r.id, reverse=True)
         return rows[:limit]
+
+    def list_pending_for_website(
+        self, website_id: int, *, limit: int = 100
+    ) -> list[WebsiteContent]:
+        rows = [
+            r
+            for r in self._items.values()
+            if r.website_id == website_id and r.extraction_status == "pending" and not r.is_excluded
+        ]
+        rows.sort(key=lambda r: r.id)
+        return rows[:limit]
+
+    def list_failed_for_website(self, website_id: int, *, limit: int = 100) -> list[WebsiteContent]:
+        rows = [
+            r
+            for r in self._items.values()
+            if r.website_id == website_id and r.extraction_status == "failed" and not r.is_excluded
+        ]
+        rows.sort(key=lambda r: r.id)
+        return rows[:limit]
+
+    def list_for_website(self, website_id: int) -> list[WebsiteContent]:
+        rows = [r for r in self._items.values() if r.website_id == website_id]
+        rows.sort(key=lambda r: r.id)
+        return rows
 
     def count_by_website(self, website_id: int) -> int:
         return sum(1 for r in self._items.values() if r.website_id == website_id)
@@ -540,73 +755,91 @@ class InMemoryArticleRepository:
     def count_all(
         self,
         *,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
+        content_type: str | None = None,
+        extraction_status: str | None = None,
         status: str | None = None,
         discovered_since: datetime | None = None,
     ) -> int:
-        rows = list(self._items.values())
-        if brand_id is not None:
-            rows = [r for r in rows if self._matches_brand(r, brand_id)]
+        rows = [r for r in self._items.values() if not r.is_excluded]
         if website_id is not None:
             rows = [r for r in rows if r.website_id == website_id]
+        if category_id is not None:
+            rows = [r for r in rows if self._matches_category(r, category_id)]
+        if content_type is not None:
+            rows = [r for r in rows if r.content_type == content_type]
+        if extraction_status is not None:
+            rows = [r for r in rows if r.extraction_status == extraction_status]
         if status is not None:
             rows = [r for r in rows if r.status == status]
         if discovered_since is not None:
             cutoff = discovered_since.replace(tzinfo=None)
-            rows = [r for r in rows if r.discovered_at >= cutoff]
+            rows = [r for r in rows if r.first_discovered_at >= cutoff]
         return len(rows)
 
-    def create(self, data: dict[str, Any]) -> SourceArticle:
+    def create(self, data: dict[str, Any]) -> WebsiteContent:
         self._seq += 1
         now = utc_now_naive()
         defaults = {
+            "content_type": "blog_post",
+            "classification_method": "default",
+            "manual_classification_override": False,
+            "is_excluded": False,
+            "categories": [],
+            "tags": [],
+            "keywords": [],
+            "discovery_sources": [],
             "word_count": 0,
+            "extraction_status": "extracted",
             "status": "extracted",
             "is_historical_baseline": False,
-            "discovered_at": now,
+            "first_discovered_at": now,
+            "last_discovered_at": now,
             "last_checked_at": now,
             "created_at": now,
             "updated_at": now,
         }
         merged = {**defaults, **data}
-        article = SourceArticle(id=self._seq, **merged)
-        self._items[article.id] = article
-        return article
+        item = WebsiteContent(id=self._seq, **merged)
+        self._items[item.id] = item
+        return item
 
-    def update(self, article_id: int, data: dict[str, Any]) -> SourceArticle | None:
-        article = self._items.get(article_id)
-        if article is None:
+    def update(self, content_id: int, data: dict[str, Any]) -> WebsiteContent | None:
+        item = self._items.get(content_id)
+        if item is None:
             return None
         for key, value in data.items():
-            setattr(article, key, value)
-        article.updated_at = utc_now_naive()
-        return article
+            setattr(item, key, value)
+        item.updated_at = utc_now_naive()
+        return item
 
-    def list_revisions(self, article_id: int) -> list[SourceArticleRevision]:
-        rows = [r for r in self._revisions if r.article_id == article_id]
+    def list_revisions(self, content_id: int) -> list[ContentRevision]:
+        rows = [r for r in self._revisions if r.content_id == content_id]
         rows.sort(key=lambda r: r.revision_number, reverse=True)
         return rows
 
-    def get_next_revision_number(self, article_id: int) -> int:
-        revs = self.list_revisions(article_id)
+    def get_next_revision_number(self, content_id: int) -> int:
+        revs = self.list_revisions(content_id)
         return (revs[0].revision_number if revs else 0) + 1
 
     def create_revision(
         self,
         *,
-        article_id: int,
+        content_id: int,
         revision_number: int,
         title: str,
         meta_description: str | None,
         markdown_content: str | None,
         content_hash: str,
-    ) -> SourceArticleRevision:
+        content_type: str | None = None,
+    ) -> ContentRevision:
         self._rev_seq += 1
-        rev = SourceArticleRevision(
+        rev = ContentRevision(
             id=self._rev_seq,
-            article_id=article_id,
+            content_id=content_id,
             revision_number=revision_number,
+            content_type=content_type,
             title=title,
             meta_description=meta_description,
             markdown_content=markdown_content,
@@ -621,11 +854,13 @@ class InMemoryScanLogRepository:
     def __init__(self, website_repo: InMemoryWebsiteRepository) -> None:
         self.website_repo = website_repo
         self._items: dict[int, WebsiteScanLog] = {}
+        self._scan_items: dict[int, WebsiteScanItem] = {}
         self._seq = 0
+        self._item_seq = 0
 
-    def _matches_brand(self, scan: WebsiteScanLog, brand_id: int) -> bool:
+    def _matches_category(self, scan: WebsiteScanLog, category_id: int) -> bool:
         site = self.website_repo.get_by_id(scan.website_id)
-        return site is not None and site.brand_id == brand_id
+        return site is not None and site.category_id == category_id
 
     def get_by_id(self, scan_id: int) -> WebsiteScanLog | None:
         return self._items.get(scan_id)
@@ -635,6 +870,16 @@ class InMemoryScanLogRepository:
             s
             for s in self._items.values()
             if s.website_id == website_id and s.status in {"pending", "processing"}
+        ]
+        rows.sort(key=lambda s: s.id, reverse=True)
+        return rows[0] if rows else None
+
+    def get_latest_incomplete_for_website(self, website_id: int) -> WebsiteScanLog | None:
+        rows = [
+            s
+            for s in self._items.values()
+            if s.website_id == website_id
+            and s.status in {"incomplete", "paused", "partially_completed"}
         ]
         rows.sort(key=lambda s: s.id, reverse=True)
         return rows[0] if rows else None
@@ -656,28 +901,28 @@ class InMemoryScanLogRepository:
         self,
         *,
         limit: int = 8,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
     ) -> list[WebsiteScanLog]:
         rows = sorted(self._items.values(), key=lambda s: s.id, reverse=True)
-        if brand_id is not None:
-            rows = [s for s in rows if self._matches_brand(s, brand_id)]
         if website_id is not None:
             rows = [s for s in rows if s.website_id == website_id]
+        if category_id is not None:
+            rows = [s for s in rows if self._matches_category(s, category_id)]
         return rows[:limit]
 
     def count_by_status(
         self,
         status: str,
         *,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
     ) -> int:
         rows = [s for s in self._items.values() if s.status == status]
-        if brand_id is not None:
-            rows = [s for s in rows if self._matches_brand(s, brand_id)]
         if website_id is not None:
             rows = [s for s in rows if s.website_id == website_id]
+        if category_id is not None:
+            rows = [s for s in rows if self._matches_category(s, category_id)]
         return len(rows)
 
     def create(
@@ -686,6 +931,7 @@ class InMemoryScanLogRepository:
         website_id: int,
         scan_method: str,
         trigger_type: str,
+        scan_mode: str = "full",
         status: str = "pending",
     ) -> WebsiteScanLog:
         self._seq += 1
@@ -694,14 +940,24 @@ class InMemoryScanLogRepository:
             id=self._seq,
             website_id=website_id,
             scan_method=scan_method,
+            scan_mode=scan_mode,
             trigger_type=trigger_type,
             urls_found=0,
             articles_processed=0,
+            urls_pending_extraction=0,
             new_articles=0,
             updated_articles=0,
             unchanged_articles=0,
             skipped_articles=0,
             failed_articles=0,
+            excluded_count=0,
+            homepage_count=0,
+            page_count=0,
+            blog_post_count=0,
+            other_count=0,
+            discovered_sitemaps_json=[],
+            sources_completed_json=[],
+            sources_failed_json=[],
             status=status,
             heartbeat_at=now,
             created_at=now,
@@ -743,7 +999,7 @@ class InMemoryScanLogRepository:
                 continue
             ref_time = scan.heartbeat_at or scan.created_at
             if ref_time < cutoff:
-                scan.status = "failed"
+                scan.status = "paused" if scan.urls_pending_extraction > 0 else "failed"
                 scan.completed_at = now
                 scan.error_message = (
                     f"Recovered stale scan after exceeding {stale_minutes} "
@@ -751,6 +1007,122 @@ class InMemoryScanLogRepository:
                 )
                 recovered.append(scan)
         return recovered
+
+    def upsert_scan_item(
+        self,
+        *,
+        scan_log_id: int,
+        website_id: int,
+        url: str,
+        normalized_url: str,
+        url_hash: str,
+        content_type: str,
+        discovery_sources: list[str] | None = None,
+        discovered_title: str | None = None,
+        discovered_published_at: datetime | None = None,
+        discovered_modified_at: datetime | None = None,
+        status: str = "pending",
+        content_id: int | None = None,
+        http_status: int | None = None,
+        failure_reason: str | None = None,
+        error_detail: str | None = None,
+    ) -> WebsiteScanItem:
+        now = utc_now_naive()
+        for existing in self._scan_items.values():
+            if existing.scan_log_id == scan_log_id and existing.url_hash == url_hash:
+                merged_sources = list(existing.discovery_sources or [])
+                for src in discovery_sources or []:
+                    if src not in merged_sources:
+                        merged_sources.append(src)
+                existing.discovery_sources = merged_sources
+                existing.content_type = content_type or existing.content_type
+                if discovered_title and not existing.discovered_title:
+                    existing.discovered_title = discovered_title[:500]
+                if content_id is not None:
+                    existing.content_id = content_id
+                if status:
+                    existing.status = status
+                if http_status is not None:
+                    existing.http_status = http_status
+                if failure_reason is not None:
+                    existing.failure_reason = failure_reason[:120]
+                if error_detail is not None:
+                    existing.error_detail = error_detail[:500]
+                existing.updated_at = now
+                return existing
+
+        self._item_seq += 1
+        item = WebsiteScanItem(
+            id=self._item_seq,
+            scan_log_id=scan_log_id,
+            website_id=website_id,
+            content_id=content_id,
+            url=url[:1000],
+            normalized_url=normalized_url[:1000],
+            url_hash=url_hash,
+            content_type=content_type,
+            discovery_sources=list(discovery_sources or []),
+            discovered_title=discovered_title[:500] if discovered_title else None,
+            discovered_published_at=discovered_published_at,
+            discovered_modified_at=discovered_modified_at,
+            status=status,
+            http_status=http_status,
+            failure_reason=failure_reason[:120] if failure_reason else None,
+            error_detail=error_detail[:500] if error_detail else None,
+            processed_at=now
+            if status in {"excluded", "failed", "new", "updated", "unchanged"}
+            else None,
+            created_at=now,
+            updated_at=now,
+        )
+        self._scan_items[item.id] = item
+        return item
+
+    def list_scan_items(
+        self,
+        scan_log_id: int,
+        *,
+        status: str | None = None,
+        failures_or_excluded_only: bool = False,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[WebsiteScanItem], int]:
+        rows = [r for r in self._scan_items.values() if r.scan_log_id == scan_log_id]
+        if status:
+            rows = [r for r in rows if r.status == status]
+        elif failures_or_excluded_only:
+            rows = [r for r in rows if r.status in {"failed", "excluded"}]
+        rows.sort(key=lambda r: r.id)
+        total = len(rows)
+        start = (page - 1) * page_size
+        return rows[start : start + page_size], total
+
+    def list_pending_scan_items(
+        self, scan_log_id: int, *, limit: int = 100
+    ) -> list[WebsiteScanItem]:
+        rows = [
+            r
+            for r in self._scan_items.values()
+            if r.scan_log_id == scan_log_id and r.status == "pending"
+        ]
+        rows.sort(key=lambda r: r.id)
+        return rows[:limit]
+
+    def update_scan_item(self, item_id: int, data: dict[str, Any]) -> WebsiteScanItem | None:
+        item = self._scan_items.get(item_id)
+        if item is None:
+            return None
+        for key, value in data.items():
+            setattr(item, key, value)
+        item.updated_at = utc_now_naive()
+        return item
+
+    def count_scan_items_by_status(self, scan_log_id: int) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in self._scan_items.values():
+            if row.scan_log_id == scan_log_id:
+                counts[row.status] = counts.get(row.status, 0) + 1
+        return counts
 
 
 class InMemoryMediaRepository:
@@ -763,11 +1135,11 @@ class InMemoryMediaRepository:
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        website_id: int | None = None,
     ) -> tuple[list[MediaAsset], int]:
         rows = sorted(self._items.values(), key=lambda r: r.id, reverse=True)
-        if brand_id is not None:
-            rows = [r for r in rows if r.brand_id == brand_id]
+        if website_id is not None:
+            rows = [r for r in rows if r.website_id == website_id]
         total = len(rows)
         start = (page - 1) * page_size
         return rows[start : start + page_size], total
@@ -782,17 +1154,19 @@ class InMemoryMediaRepository:
         return None
 
     def get_by_source_url(
-        self, source_url: str, *, brand_id: int | None = None
+        self, source_url: str, *, website_id: int | None = None
     ) -> MediaAsset | None:
         for row in self._items.values():
-            if row.source_url == source_url and (brand_id is None or row.brand_id == brand_id):
+            if row.source_url == source_url and (
+                website_id is None or row.website_id == website_id
+            ):
                 return row
         return None
 
     def create(
         self,
         *,
-        brand_id: int | None,
+        website_id: int | None,
         file_name: str,
         file_path: str | None,
         source_url: str | None,
@@ -806,7 +1180,7 @@ class InMemoryMediaRepository:
         self._seq += 1
         asset = MediaAsset(
             id=self._seq,
-            brand_id=brand_id,
+            website_id=website_id,
             file_name=file_name,
             file_path=file_path,
             source_url=source_url,
@@ -849,9 +1223,10 @@ def memory_repos() -> dict[str, Any]:
         "sessions": InMemorySessionRepository(),
         "settings": InMemorySettingsRepository(),
         "activities": InMemoryActivityLogRepository(),
-        "brands": InMemoryBrandRepository(),
+        "categories": InMemoryWebsiteCategoryRepository(),
         "websites": website_repo,
-        "articles": InMemoryArticleRepository(website_repo),
+        "sources": InMemoryWebsiteSourceConfigRepository(),
+        "contents": InMemoryContentRepository(website_repo),
         "scans": InMemoryScanLogRepository(website_repo),
         "media": InMemoryMediaRepository(),
         "rate_limiter": SlidingWindowRateLimiter(max_attempts=3, window_seconds=300),
@@ -898,9 +1273,10 @@ def app(
     application.dependency_overrides[get_session_repo] = lambda: memory_repos["sessions"]
     application.dependency_overrides[get_settings_repo] = lambda: memory_repos["settings"]
     application.dependency_overrides[get_activity_log_repo] = lambda: memory_repos["activities"]
-    application.dependency_overrides[get_brand_repo] = lambda: memory_repos["brands"]
+    application.dependency_overrides[get_category_repo] = lambda: memory_repos["categories"]
     application.dependency_overrides[get_website_repo] = lambda: memory_repos["websites"]
-    application.dependency_overrides[get_article_repo] = lambda: memory_repos["articles"]
+    application.dependency_overrides[get_website_source_repo] = lambda: memory_repos["sources"]
+    application.dependency_overrides[get_content_repo] = lambda: memory_repos["contents"]
     application.dependency_overrides[get_scan_log_repo] = lambda: memory_repos["scans"]
     application.dependency_overrides[get_media_repo] = lambda: memory_repos["media"]
     application.dependency_overrides[get_login_rate_limiter] = lambda: memory_repos["rate_limiter"]

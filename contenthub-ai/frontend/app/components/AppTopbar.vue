@@ -16,13 +16,6 @@ const searchContainer = ref<HTMLElement | null>(null)
 const searchResults = computed<NavModuleItem[]>(() => filterModulesByQuery(uiStore.globalSearchQuery))
 const isDark = computed(() => colorMode.value === 'dark')
 
-const brandSelectValue = computed({
-  get: () => (uiStore.selectedBrandId !== null ? String(uiStore.selectedBrandId) : 'all'),
-  set: (val: string) => {
-    uiStore.setBrandFilter(val === 'all' ? null : Number(val))
-  },
-})
-
 const websiteSelectValue = computed({
   get: () => (uiStore.selectedWebsiteId !== null ? String(uiStore.selectedWebsiteId) : 'all'),
   set: (val: string) => {
@@ -149,35 +142,20 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Active Phase 2 Global Brand & Website Selectors -->
+      <!-- Active Phase 2.1 Global Website Selector -->
       <div class="hidden items-center gap-1.5 xl:flex">
-        <select
-          v-model="brandSelectValue"
-          aria-label="Global brand filter"
-          class="h-8 max-w-40 rounded-md border border-slate-200 bg-slate-50 px-2 text-xs text-slate-700 focus:border-teal-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-        >
-          <option value="all">All Brands</option>
-          <option
-            v-for="brand in uiStore.brandsCatalog"
-            :key="brand.id"
-            :value="String(brand.id)"
-          >
-            {{ brand.name }}
-          </option>
-        </select>
-
         <select
           v-model="websiteSelectValue"
           aria-label="Global website filter"
-          class="h-8 max-w-44 rounded-md border border-slate-200 bg-slate-50 px-2 text-xs text-slate-700 focus:border-teal-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          class="h-8 max-w-52 rounded-md border border-slate-200 bg-slate-50 px-2 text-xs text-slate-700 focus:border-teal-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
         >
           <option value="all">All Websites</option>
           <option
-            v-for="site in uiStore.filteredWebsitesCatalog"
+            v-for="site in uiStore.websitesCatalog"
             :key="site.id"
             :value="String(site.id)"
           >
-            {{ site.name }}
+            {{ site.name }} ({{ site.brand_name }})
           </option>
         </select>
       </div>

@@ -78,7 +78,7 @@ class RssDiscoveryAdapter:
         base_origin = f"https://{domain}"
         warnings: list[str] = []
 
-        while current_url and len(candidates) < max_urls and page < 5:
+        while current_url and len(candidates) < max_urls and page < 50:
             if current_url in visited_feeds:
                 break
             visited_feeds.add(current_url)
@@ -90,8 +90,7 @@ class RssDiscoveryAdapter:
                     etag=etag if page == 1 else None,
                     last_modified=last_modified if page == 1 else None,
                     accept=(
-                        "application/rss+xml, application/atom+xml, "
-                        "application/xml, text/xml;q=0.9"
+                        "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9"
                     ),
                 )
             except ScannerError as exc:

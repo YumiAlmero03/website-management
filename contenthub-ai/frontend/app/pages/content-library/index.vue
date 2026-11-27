@@ -1,353 +1,543 @@
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Search } from 'lucide-vue-next'
-import type { ArticleListResponse } from '~/types/api'
-import { extractErrorMessage, formatDateTime } from '~/utils/format'
+import { Ban, CheckCircle2, ExternalLink, RefreshCw, RotateCcw } from 'lucide-vue-next'
+import type { ContentListItem, ContentListResponse, ContentStats } from '~/types/api'
+import {
+  CONTENT_TYPE_OPTIONS,
+  extractErrorMessage,
+  formatDateTime,
+  getContentTypeMeta,
+} from '~/utils/format'
 
+const route = useRoute()
 const { request } = useApiClient()
 const uiStore = useUiStore()
+const toast = useToast()
 
-const articlesData = ref<ArticleListResponse | null>(null)
-const loading = ref(true)
-const errorMessage = ref<string | null>(null)
-
+const activeTab = ref<string>(
+  typeof route.query.tab === 'string' ? route.query.tab : 'all',
+)
+const websiteFilter = ref<string>(
+  typeof route.query.website_id === 'string'
+    ? route.query.website_id
+    : (uiStore.selectedWebsiteId !== null ? String(uiStore.selectedWebsiteId) : 'all'),
+)
+const categoryFilter = ref<string>('all')
+const changeFilter = ref<string>('all')
+const search = ref('')
+const sortBy = ref<'last_discovered_at' | 'word_count' | 'title'>('last_discovered_at')
 const page = ref(1)
 const pageSize = ref(20)
-const searchQuery = ref('')
-const languageFilter = ref('')
-const categoryFilter = ref('')
-const statusFilter = ref('all')
-const changeFilter = ref('all')
-const dateFrom = ref('')
-const dateTo = ref('')
 
-const STATUS_OPTIONS = [
-  { label: 'All Statuses', value: 'all' },
-  { label: 'Optimized', value: 'optimized' },
-  { label: 'Extracted', value: 'extracted' },
-  { label: 'Updated', value: 'updated' },
-  { label: 'Discovered', value: 'discovered' },
-  { label: 'Archived', value: 'archived' },
-]
+const items = ref<ContentListItem[]>([])
+const stats = ref<ContentStats>({
+  total_discovered: 0,
+  total_extracted: 0,
+  homepage_count: 0,
+  page_count: 0,
+  blog_post_count: 0,
+  blog_index_count: 0,
+  other_count: 0,
+  pending_count: 0,
+  failed_count: 0,
+  updated_count: 0,
+  excluded_count: 0,
+  discovered_today_count: 0,
+})
+const totalItems = ref(0)
+const loading = ref(true)
+const errorMessage = ref<string | null>(null)
+const busyItemId = ref<number | null>(null)
 
-const CHANGE_OPTIONS = [
-  { label: 'All Articles', value: 'all' },
-  { label: 'New / Baseline', value: 'new' },
-  { label: 'Updated Revisions', value: 'updated' },
-]
+const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / pageSize.value)))
 
-async function fetchArticles() {
+const tabs = computed(() => [
+  { key: 'all', label: 'All Content', count: stats.value.total_discovered },
+  { key: 'homepage', label: 'Homepage', count: stats.value.homepage_count },
+  { key: 'pages', label: 'Pages', count: stats.value.page_count },
+  { key: 'blog_posts', label: 'Blog Posts', count: stats.value.blog_post_count },
+  { key: 'blog_indexes', label: 'Blog Indexes', count: stats.value.blog_index_count },
+  { key: 'other', label: 'Other', count: stats.value.other_count },
+  { key: 'failed', label: 'Failed Extraction', count: stats.value.failed_count },
+])
+
+async function loadContents() {
   loading.value = true
   errorMessage.value = null
   try {
-    const query: Record<string, string | number> = {
+    const query: Record<string, string | number | boolean> = {
       page: page.value,
       page_size: pageSize.value,
+      tab: activeTab.value,
+      sort_by: sortBy.value,
+      sort_dir: sortBy.value === 'title' ? 'asc' : 'desc',
     }
-    if (uiStore.selectedBrandId !== null) {
-      query.brand_id = uiStore.selectedBrandId
+    if (websiteFilter.value !== 'all') {
+      query.website_id = Number(websiteFilter.value)
     }
-    if (uiStore.selectedWebsiteId !== null) {
-      query.website_id = uiStore.selectedWebsiteId
-    }
-    if (searchQuery.value.trim()) {
-      query.search = searchQuery.value.trim()
-    }
-    if (languageFilter.value.trim()) {
-      query.language = languageFilter.value.trim()
-    }
-    if (categoryFilter.value.trim()) {
-      query.category = categoryFilter.value.trim()
-    }
-    if (statusFilter.value !== 'all') {
-      query.status = statusFilter.value
+    if (categoryFilter.value !== 'all') {
+      query.category_id = Number(categoryFilter.value)
     }
     if (changeFilter.value !== 'all') {
       query.change_filter = changeFilter.value
     }
-    if (dateFrom.value) {
-      query.date_from = `${dateFrom.value}T00:00:00Z`
-    }
-    if (dateTo.value) {
-      query.date_to = `${dateTo.value}T23:59:59Z`
+    if (search.value.trim()) {
+      query.search = search.value.trim()
     }
 
-    articlesData.value = await request<ArticleListResponse>('/api/v1/articles', { query })
+    const res = await request<ContentListResponse>('/api/v1/contents', { query })
+    items.value = res.items
+    stats.value = res.stats
+    totalItems.value = res.meta.total_items
   }
   catch (err) {
-    errorMessage.value = extractErrorMessage(err, 'Failed to load Content Library articles.')
+    errorMessage.value = extractErrorMessage(err, 'Failed to load Content Library.')
   }
   finally {
     loading.value = false
   }
 }
 
-function applyFilters() {
-  page.value = 1
-  void fetchArticles()
+async function reclassifyItem(item: ContentListItem, newType: string) {
+  if (item.content_type === newType) {
+    return
+  }
+  busyItemId.value = item.id
+  try {
+    await request(`/api/v1/contents/${item.id}`, {
+      method: 'PATCH',
+      body: { content_type: newType, manual_classification_override: true },
+    })
+    toast.add({
+      title: 'Classification updated',
+      description: `Pinned as "${getContentTypeMeta(newType).label}" (manual override enabled).`,
+      color: 'success',
+    })
+    await loadContents()
+  }
+  catch (err) {
+    toast.add({
+      title: 'Reclassification failed',
+      description: extractErrorMessage(err, 'Could not update content type.'),
+      color: 'error',
+    })
+  }
+  finally {
+    busyItemId.value = null
+  }
+}
+
+async function toggleExcludeItem(item: ContentListItem) {
+  busyItemId.value = item.id
+  try {
+    await request(`/api/v1/contents/${item.id}`, {
+      method: 'PATCH',
+      body: { is_excluded: !item.is_excluded },
+    })
+    toast.add({
+      title: item.is_excluded ? 'URL restored' : 'URL excluded',
+      color: 'success',
+    })
+    await loadContents()
+  }
+  catch (err) {
+    toast.add({
+      title: 'Update failed',
+      description: extractErrorMessage(err, 'Could not change exclusion flag.'),
+      color: 'error',
+    })
+  }
+  finally {
+    busyItemId.value = null
+  }
+}
+
+async function retryExtraction(item: ContentListItem) {
+  busyItemId.value = item.id
+  try {
+    const updated = await request<ContentListItem>(`/api/v1/contents/${item.id}/reprocess`, {
+      method: 'POST',
+    })
+    toast.add({
+      title: updated.extraction_status === 'extracted' ? 'Extraction succeeded' : 'Extraction failed',
+      description: updated.extraction_error || `${updated.word_count} words extracted.`,
+      color: updated.extraction_status === 'extracted' ? 'success' : 'warning',
+    })
+    await loadContents()
+  }
+  catch (err) {
+    toast.add({
+      title: 'Re-extraction error',
+      description: extractErrorMessage(err, 'Could not reprocess URL.'),
+      color: 'error',
+    })
+  }
+  finally {
+    busyItemId.value = null
+  }
 }
 
 watch(
-  () => [uiStore.selectedBrandId, uiStore.selectedWebsiteId],
-  () => {
-    page.value = 1
-    void fetchArticles()
+  () => uiStore.selectedWebsiteId,
+  (val) => {
+    websiteFilter.value = val !== null ? String(val) : 'all'
   },
 )
 
+watch([activeTab, websiteFilter, categoryFilter, changeFilter, sortBy], () => {
+  page.value = 1
+  void loadContents()
+})
+
+watch(page, () => {
+  void loadContents()
+})
+
 onMounted(() => {
-  void fetchArticles()
+  void Promise.all([uiStore.refreshGlobalSelectors(), loadContents()])
 })
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="space-y-5">
+    <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100">
-          Content Library
+          Universal Content Library
         </h1>
         <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-          Discovered articles stored in MySQL with clean Markdown, native YAKE keywords, and Python-prepared token contexts.
+          Every discovered homepage, page, blog index, blog post, category archive, revision, and extraction failure stored in MySQL.
         </p>
       </div>
       <UButton
         color="neutral"
         variant="outline"
         size="sm"
-        :loading="loading"
-        @click="fetchArticles()"
+        @click="loadContents()"
       >
         <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
         Refresh
       </UButton>
     </div>
 
-    <!-- Filter Bar -->
-    <form
-      class="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:grid-cols-2 lg:grid-cols-6 dark:border-slate-800 dark:bg-slate-900"
-      @submit.prevent="applyFilters"
-    >
-      <div class="lg:col-span-2">
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Keyword Search</label>
-        <div class="relative">
-          <Search class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-          <UInput
-            v-model="searchQuery"
-            placeholder="Title, description, URL..."
-            class="w-full pl-8"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Status</label>
-        <USelect
-          v-model="statusFilter"
-          :items="STATUS_OPTIONS"
-          value-key="value"
-          class="w-full"
-          @update:model-value="applyFilters"
-        />
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Change Filter</label>
-        <USelect
-          v-model="changeFilter"
-          :items="CHANGE_OPTIONS"
-          value-key="value"
-          class="w-full"
-          @update:model-value="applyFilters"
-        />
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Language</label>
-        <UInput
-          v-model="languageFilter"
-          placeholder="en, fil, pt-BR"
-          class="w-full"
-        />
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Category</label>
-        <UInput
-          v-model="categoryFilter"
-          placeholder="SEO, Guides..."
-          class="w-full"
-        />
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Discovered From</label>
-        <UInput
-          v-model="dateFrom"
-          type="date"
-          class="w-full"
-        />
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Discovered To</label>
-        <UInput
-          v-model="dateTo"
-          type="date"
-          class="w-full"
-        />
-      </div>
-
-      <div class="flex items-end">
-        <UButton
-          type="submit"
-          color="primary"
-          size="sm"
+    <!-- Real DB Tab Counts -->
+    <div class="flex flex-wrap gap-1.5 border-b border-slate-200 pb-3 dark:border-slate-800">
+      <button
+        v-for="tab in tabs"
+        :key="tab.key"
+        type="button"
+        :class="[
+          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+          activeTab === tab.key
+            ? 'bg-teal-600 text-white'
+            : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800 dark:hover:bg-slate-800',
+        ]"
+        @click="activeTab = tab.key"
+      >
+        <span>{{ tab.label }}</span>
+        <span
+          :class="[
+            'rounded-full px-1.5 py-0.5 font-mono text-[10px]',
+            activeTab === tab.key ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+          ]"
         >
-          Apply Filters
-        </UButton>
-      </div>
-    </form>
+          {{ tab.count }}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        :class="[
+          'ml-auto inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+          activeTab === 'excluded'
+            ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900'
+            : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800',
+        ]"
+        @click="activeTab = activeTab === 'excluded' ? 'all' : 'excluded'"
+      >
+        <span>Excluded ({{ stats.excluded_count }})</span>
+      </button>
+    </div>
+
+    <!-- Filters -->
+    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+      <UInput
+        v-model="search"
+        placeholder="Search title, URL, or content..."
+        class="w-full sm:w-64"
+        @keyup.enter="page = 1; loadContents()"
+      />
+
+      <select
+        v-model="websiteFilter"
+        aria-label="Filter by website"
+        class="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      >
+        <option value="all">All Websites</option>
+        <option
+          v-for="site in uiStore.websitesCatalog"
+          :key="site.id"
+          :value="String(site.id)"
+        >
+          {{ site.name }}
+        </option>
+      </select>
+
+      <select
+        v-model="categoryFilter"
+        aria-label="Filter by website category"
+        class="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      >
+        <option value="all">All Website Categories</option>
+        <option
+          v-for="cat in uiStore.categoriesCatalog"
+          :key="cat.id"
+          :value="String(cat.id)"
+        >
+          {{ cat.name }}
+        </option>
+      </select>
+
+      <select
+        v-model="changeFilter"
+        aria-label="Filter by change status"
+        class="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      >
+        <option value="all">All Changes</option>
+        <option value="new">New / Extracted</option>
+        <option value="updated">Updated (Has Revision)</option>
+      </select>
+
+      <select
+        v-model="sortBy"
+        aria-label="Sort results"
+        class="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      >
+        <option value="last_discovered_at">Sort: Last Discovered</option>
+        <option value="word_count">Sort: Word Count</option>
+        <option value="title">Sort: Title A-Z</option>
+      </select>
+
+      <UButton
+        color="neutral"
+        variant="outline"
+        size="xs"
+        @click="page = 1; loadContents()"
+      >
+        Search
+      </UButton>
+    </div>
 
     <AppErrorState
       v-if="errorMessage && !loading"
-      title="Could not load articles"
+      title="Failed to load content"
       :message="errorMessage"
       retryable
-      @retry="fetchArticles()"
+      @retry="loadContents()"
     />
 
-    <div class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-      <div
-        v-if="loading"
-        class="space-y-3 p-4"
-      >
-        <USkeleton
-          v-for="idx in 6"
-          :key="idx"
-          class="h-10 w-full"
-        />
-      </div>
+    <div
+      v-else-if="loading"
+      class="space-y-3"
+    >
+      <USkeleton class="h-16 w-full" />
+      <USkeleton class="h-16 w-full" />
+      <USkeleton class="h-16 w-full" />
+    </div>
 
-      <div
-        v-else-if="!articlesData || articlesData.items.length === 0"
-        class="p-6"
-      >
-        <AppEmptyState
-          title="No discovered articles match your filters"
-          description="Run a website scan in the Websites module or clear your current filters."
-        />
-      </div>
+    <AppEmptyState
+      v-else-if="items.length === 0"
+      title="No matching content items"
+      description="Run a scan from Websites Management or switch tabs to inspect other discovered URLs."
+    />
 
-      <template v-else>
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
-            <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
-              <tr>
-                <th class="px-4 py-2.5 font-medium">Article</th>
-                <th class="px-4 py-2.5 font-medium">Brand / Website</th>
-                <th class="px-4 py-2.5 font-medium">Lang</th>
-                <th class="px-4 py-2.5 font-medium">Words</th>
-                <th class="px-4 py-2.5 font-medium">Status</th>
-                <th class="px-4 py-2.5 font-medium">Published</th>
-                <th class="px-4 py-2.5 font-medium">Discovered / Checked</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
-              <tr
-                v-for="article in articlesData.items"
-                :key="article.id"
-                class="hover:bg-slate-50/70 dark:hover:bg-slate-800/40"
+    <div
+      v-else
+      class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+    >
+      <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
+        <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
+          <tr>
+            <th class="px-4 py-3 font-medium">Title & URL</th>
+            <th class="px-4 py-3 font-medium">Website</th>
+            <th class="px-4 py-3 font-medium">Classification</th>
+            <th class="px-4 py-3 font-medium">Extraction</th>
+            <th class="px-4 py-3 font-medium">Sources & Words</th>
+            <th class="px-4 py-3 font-medium">Discovered</th>
+            <th class="px-4 py-3 text-right font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
+          <tr
+            v-for="item in items"
+            :key="item.id"
+            class="hover:bg-slate-50/70 dark:hover:bg-slate-800/40"
+          >
+            <td class="max-w-xs px-4 py-3">
+              <NuxtLink
+                :to="`/content-library/${item.id}`"
+                class="line-clamp-1 font-semibold text-slate-900 hover:text-teal-600 dark:text-slate-100 dark:hover:text-teal-300"
               >
-                <td class="px-4 py-3">
-                  <div class="flex items-start gap-3">
-                    <img
-                      v-if="article.featured_image_url"
-                      :src="article.featured_image_url"
-                      :alt="article.title"
-                      class="h-10 w-14 shrink-0 rounded border border-slate-200 object-cover dark:border-slate-700"
-                    >
-                    <div class="min-w-0">
-                      <NuxtLink
-                        :to="`/content-library/${article.id}`"
-                        class="line-clamp-2 font-semibold text-teal-700 hover:underline dark:text-teal-300"
-                      >
-                        {{ article.title }}
-                      </NuxtLink>
-                      <div class="mt-0.5 flex flex-wrap items-center gap-2">
-                        <a
-                          :href="article.canonical_url"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600"
-                        >
-                          Source
-                          <ExternalLink class="h-3 w-3" />
-                        </a>
-                        <UBadge
-                          v-if="article.near_duplicate_of_id"
-                          color="warning"
-                          variant="subtle"
-                          size="sm"
-                        >
-                          Similar #{{ article.near_duplicate_of_id }} ({{ article.near_duplicate_score }}%)
-                        </UBadge>
-                      </div>
-                    </div>
-                  </div>
-                </td>
-                <td class="px-4 py-3 whitespace-nowrap">
-                  <p class="font-medium text-slate-800 dark:text-slate-200">{{ article.brand_name || '-' }}</p>
-                  <p class="text-[11px] text-slate-500">{{ article.website_name || `#${article.website_id}` }}</p>
-                </td>
-                <td class="px-4 py-3 font-mono text-[11px]">{{ article.language || '-' }}</td>
-                <td class="px-4 py-3">{{ article.word_count }}</td>
-                <td class="px-4 py-3">
-                  <HealthStatusBadge
-                    :status="article.status === 'optimized' || article.status === 'extracted' ? 'ok' : article.status"
-                    :label="article.status"
-                  />
-                </td>
-                <td class="px-4 py-3 whitespace-nowrap text-slate-500">
-                  {{ formatDateTime(article.published_at) }}
-                </td>
-                <td class="px-4 py-3 whitespace-nowrap text-[11px] text-slate-500">
-                  <div>Disc: {{ formatDateTime(article.discovered_at) }}</div>
-                  <div>Chk: {{ formatDateTime(article.last_checked_at) }}</div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                {{ item.title }}
+              </NuxtLink>
+              <a
+                :href="item.canonical_url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="mt-0.5 inline-flex max-w-xs items-center gap-1 truncate font-mono text-[11px] text-slate-500 hover:text-teal-600 dark:text-slate-400"
+              >
+                <span class="truncate">{{ item.canonical_url }}</span>
+                <ExternalLink class="h-3 w-3 shrink-0" />
+              </a>
+              <p
+                v-if="item.extraction_error"
+                class="mt-1 line-clamp-1 text-[11px] text-rose-600 dark:text-rose-400"
+              >
+                {{ item.extraction_error }}
+              </p>
+            </td>
 
-        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-slate-800">
-          <span>
-            Page {{ articlesData.meta.page }} of {{ Math.max(1, articlesData.meta.total_pages) }}
-            ({{ articlesData.meta.total_items }} total articles)
-          </span>
-          <div class="flex items-center gap-2">
-            <UButton
-              color="neutral"
-              variant="outline"
-              size="xs"
-              :disabled="page <= 1"
-              @click="page -= 1; fetchArticles()"
-            >
-              <ChevronLeft class="mr-1 h-3.5 w-3.5" />
-              Previous
-            </UButton>
-            <UButton
-              color="neutral"
-              variant="outline"
-              size="xs"
-              :disabled="page >= articlesData.meta.total_pages"
-              @click="page += 1; fetchArticles()"
-            >
-              Next
-              <ChevronRight class="ml-1 h-3.5 w-3.5" />
-            </UButton>
-          </div>
+            <td class="px-4 py-3">
+              <NuxtLink
+                :to="`/websites/${item.website_id}`"
+                class="font-medium text-teal-700 hover:underline dark:text-teal-300"
+              >
+                {{ item.website_name || `Website #${item.website_id}` }}
+              </NuxtLink>
+              <p class="text-[11px] text-slate-500">
+                {{ item.website_category_name || 'Uncategorized' }}
+              </p>
+            </td>
+
+            <td class="px-4 py-3">
+              <div class="flex flex-col gap-1">
+                <div class="flex items-center gap-1">
+                  <UBadge
+                    :color="getContentTypeMeta(item.content_type).color"
+                    variant="subtle"
+                    size="xs"
+                  >
+                    {{ getContentTypeMeta(item.content_type).label }}
+                  </UBadge>
+                  <span
+                    v-if="item.manual_classification_override"
+                    class="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                    title="Manually pinned classification preserved across scans"
+                  >
+                    pinned
+                  </span>
+                </div>
+                <select
+                  :value="item.content_type"
+                  aria-label="Quick reclassify content type"
+                  :disabled="busyItemId === item.id"
+                  class="h-6 rounded border border-slate-200 bg-slate-50 px-1 text-[10px] text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+                  @change="reclassifyItem(item, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option
+                    v-for="opt in CONTENT_TYPE_OPTIONS"
+                    :key="opt.value"
+                    :value="opt.value"
+                  >
+                    Reclassify: {{ opt.label }}
+                  </option>
+                </select>
+              </div>
+            </td>
+
+            <td class="px-4 py-3">
+              <HealthStatusBadge
+                :status="item.extraction_status === 'extracted' ? 'ok' : item.extraction_status === 'pending' ? 'warning' : 'error'"
+                :label="item.extraction_status"
+              />
+              <span
+                v-if="item.http_status"
+                class="mt-1 block font-mono text-[10px] text-slate-400"
+              >
+                HTTP {{ item.http_status }}
+              </span>
+            </td>
+
+            <td class="px-4 py-3">
+              <p class="font-mono text-slate-700 dark:text-slate-300">{{ item.word_count }} words</p>
+              <p class="text-[11px] text-slate-500">
+                {{ item.discovery_sources.join(', ') || 'discovered' }}
+              </p>
+            </td>
+
+            <td class="px-4 py-3 whitespace-nowrap text-slate-500 dark:text-slate-400">
+              {{ formatDateTime(item.last_discovered_at) }}
+            </td>
+
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-end gap-1">
+                <UButton
+                  :to="`/content-library/${item.id}`"
+                  color="neutral"
+                  variant="outline"
+                  size="xs"
+                >
+                  Open
+                </UButton>
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  :loading="busyItemId === item.id"
+                  title="Re-extract content now"
+                  @click="retryExtraction(item)"
+                >
+                  <RotateCcw class="h-3.5 w-3.5" />
+                </UButton>
+                <UButton
+                  :color="item.is_excluded ? 'success' : 'error'"
+                  variant="ghost"
+                  size="xs"
+                  :disabled="busyItemId === item.id"
+                  :title="item.is_excluded ? 'Restore URL' : 'Exclude URL from Content Library'"
+                  @click="toggleExcludeItem(item)"
+                >
+                  <CheckCircle2
+                    v-if="item.is_excluded"
+                    class="h-3.5 w-3.5"
+                  />
+                  <Ban
+                    v-else
+                    class="h-3.5 w-3.5"
+                  />
+                </UButton>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div
+        v-if="totalPages > 1"
+        class="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs dark:border-slate-800"
+      >
+        <span class="text-slate-500">Page {{ page }} of {{ totalPages }} ({{ totalItems }} items)</span>
+        <div class="flex gap-2">
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="outline"
+            :disabled="page <= 1"
+            @click="page--"
+          >
+            Previous
+          </UButton>
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="outline"
+            :disabled="page >= totalPages"
+            @click="page++"
+          >
+            Next
+          </UButton>
         </div>
-      </template>
+      </div>
     </div>
   </div>
 </template>

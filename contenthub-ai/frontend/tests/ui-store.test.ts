@@ -2,58 +2,77 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useUiStore } from '~/stores/ui'
 
-describe('ui store global brand and website selectors', () => {
+const emptyCounts = {
+  total_discovered: 0,
+  total_extracted: 0,
+  homepage: 0,
+  page: 0,
+  blog_index: 0,
+  blog_post: 0,
+  category: 0,
+  tag: 0,
+  archive: 0,
+  custom: 0,
+  pending: 0,
+  failed: 0,
+  updated: 0,
+  excluded: 0,
+}
+
+describe('ui store global website selector and category catalog', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
 
-  it('cascades brand and website filters accurately', () => {
+  it('tracks selected website and category catalog cleanly without a separate brand selector', () => {
     const store = useUiStore()
+    store.categoriesCatalog = [
+      {
+        id: 2,
+        name: 'Casino',
+        slug: 'casino',
+        description: null,
+        is_archived: false,
+        sort_order: 20,
+        website_count: 1,
+        created_at: '2026-11-27T00:00:00Z',
+        updated_at: '2026-11-27T00:00:00Z',
+      },
+    ]
     store.websitesCatalog = [
       {
         id: 10,
-        brand_id: 1,
-        brand_name: 'Brand A',
-        name: 'Site A1',
-        domain: 'a1.example.com',
-        website_type: 'wordpress',
-        discovery_method: 'auto',
-        rss_url: null,
-        sitemap_url: null,
-        llms_url: null,
-        api_endpoint: null,
-        article_url_patterns: [],
-        excluded_url_patterns: [],
-        scan_interval_minutes: 360,
-        auto_scan: true,
-        auto_generate: false,
-        initial_scan_completed: false,
-        baseline_mode: 'import_existing',
-        baseline_after_date: null,
-        baseline_limit: null,
-        last_scanned_at: null,
-        last_successful_scan_at: null,
-        next_scan_at: null,
-        status: 'active',
-        article_count: 0,
-        created_at: '2026-11-26T00:00:00Z',
-        updated_at: '2026-11-26T00:00:00Z',
-      },
-      {
-        id: 20,
-        brand_id: 2,
-        brand_name: 'Brand B',
-        name: 'Site B1',
-        domain: 'b1.example.com',
+        category_id: 2,
+        category_name: 'Casino',
+        name: 'Bygame Casino',
+        brand_name: 'Bygame',
+        brand_slug: 'bygame',
+        logo_url: null,
+        brand_description: null,
+        target_audience: null,
+        target_country: 'Philippines',
+        primary_language: 'Taglish',
+        secondary_languages: [],
+        tone: null,
+        target_keywords: [],
+        restricted_keywords: [],
+        default_hashtags: [],
+        default_cta: null,
+        writing_guidelines: null,
+        ai_instructions: null,
+        domain: 'bygame.ph',
         website_type: 'nuxt',
-        discovery_method: 'sitemap',
+        discovery_method: 'auto',
+        single_source_only: false,
         rss_url: null,
         sitemap_url: null,
         llms_url: null,
         api_endpoint: null,
         article_url_patterns: [],
         excluded_url_patterns: [],
-        scan_interval_minutes: 360,
+        scan_interval_minutes: 1440,
+        crawl_batch_size: 100,
+        crawl_max_urls_per_run: 1000,
         auto_scan: true,
         auto_generate: false,
         initial_scan_completed: false,
@@ -65,20 +84,17 @@ describe('ui store global brand and website selectors', () => {
         next_scan_at: null,
         status: 'active',
         article_count: 0,
-        created_at: '2026-11-26T00:00:00Z',
-        updated_at: '2026-11-26T00:00:00Z',
+        content_counts: emptyCounts,
+        created_at: '2026-11-27T00:00:00Z',
+        updated_at: '2026-11-27T00:00:00Z',
       },
     ]
 
-    store.setWebsiteFilter(20)
-    expect(store.selectedWebsiteId).toBe(20)
-    expect(store.selectedBrandId).toBe(2)
-    expect(store.filteredWebsitesCatalog).toHaveLength(1)
+    store.setWebsiteFilter(10)
+    expect(store.selectedWebsiteId).toBe(10)
+    expect(store.categoriesCatalog[0]?.name).toBe('Casino')
 
-    // Switching brand clears incompatible website selection.
-    store.setBrandFilter(1)
-    expect(store.selectedBrandId).toBe(1)
+    store.setWebsiteFilter(null)
     expect(store.selectedWebsiteId).toBeNull()
-    expect(store.filteredWebsitesCatalog[0]?.id).toBe(10)
   })
 })

@@ -21,29 +21,30 @@ from app.models.base import MYSQL_TABLE_ARGS, Base, utc_now_naive
 LONG_TEXT = Text().with_variant(mysql.LONGTEXT(), "mysql")
 
 
-class SourceArticleRevision(Base):
-    __tablename__ = "source_article_revisions"
+class ContentRevision(Base):
+    __tablename__ = "content_revisions"
     __table_args__ = (
         UniqueConstraint(
-            "article_id",
+            "content_id",
             "revision_number",
-            name="uq_source_article_revisions_article_rev",
+            name="uq_content_revisions_content_rev",
         ),
-        Index("ix_source_article_revisions_article_id", "article_id"),
+        Index("ix_content_revisions_content_id", "content_id"),
         MYSQL_TABLE_ARGS,
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    article_id: Mapped[int] = mapped_column(
+    content_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey(
-            "source_articles.id",
-            name="fk_source_article_revisions_article_id",
+            "website_contents.id",
+            name="fk_content_revisions_content_id",
             ondelete="CASCADE",
         ),
         nullable=False,
     )
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     meta_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     markdown_content: Mapped[str | None] = mapped_column(LONG_TEXT, nullable=True)

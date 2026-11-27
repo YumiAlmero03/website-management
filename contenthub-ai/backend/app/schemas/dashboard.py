@@ -25,13 +25,22 @@ class Phase1Counts(BaseModel):
 
 
 class Phase2Metrics(BaseModel):
-    total_brands: int
     active_websites: int
-    total_articles: int
-    articles_discovered_today: int
-    updated_articles: int
+    total_categories: int
+    total_contents: int
+    total_extracted: int
+    homepage_count: int
+    page_count: int
+    blog_post_count: int
+    blog_index_count: int
+    other_count: int
+    pending_extractions: int
+    failed_extractions: int
+    contents_discovered_today: int
+    updated_contents: int
     completed_scans: int
     failed_scans: int
+    incomplete_scans: int
     websites_due_for_scan: int
 
 
@@ -39,8 +48,8 @@ class DashboardSummaryResponse(BaseModel):
     generated_at: datetime
     timezone: str
     current_phase: int
-    filtered_brand_id: int | None = None
     filtered_website_id: int | None = None
+    filtered_category_id: int | None = None
     database: DatabaseHealthInfo
     resources: SystemResourcesInfo
     phase1_counts: Phase1Counts

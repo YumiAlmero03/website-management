@@ -19,9 +19,9 @@ def list_media(
     media_service: Annotated[MediaService, Depends(get_media_service)],
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
-    brand_id: int | None = Query(default=None, ge=1),
+    website_id: int | None = Query(default=None, ge=1),
 ) -> MediaAssetListResponse:
-    return media_service.list_media(page=page, page_size=page_size, brand_id=brand_id)
+    return media_service.list_media(page=page, page_size=page_size, website_id=website_id)
 
 
 @router.get("/{media_id}", response_model=MediaAssetResponse)

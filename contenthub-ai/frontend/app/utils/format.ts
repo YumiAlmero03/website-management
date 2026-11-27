@@ -60,3 +60,54 @@ export function humanizeCategory(category: string): string {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
 }
+
+export const CONTENT_TYPE_OPTIONS = [
+  { label: 'Homepage', value: 'homepage' },
+  { label: 'Page', value: 'page' },
+  { label: 'Blog Index', value: 'blog_index' },
+  { label: 'Blog Post', value: 'blog_post' },
+  { label: 'Category', value: 'category' },
+  { label: 'Tag', value: 'tag' },
+  { label: 'Archive', value: 'archive' },
+  { label: 'Custom', value: 'custom' },
+]
+
+export const WEBSITE_TECHNOLOGY_OPTIONS = [
+  { label: 'WordPress', value: 'wordpress' },
+  { label: 'Nuxt', value: 'nuxt' },
+  { label: 'Next.js', value: 'nextjs' },
+  { label: 'Custom PHP', value: 'custom_php' },
+  { label: 'Static HTML', value: 'static_html' },
+  { label: 'Other CMS', value: 'other_cms' },
+  { label: 'Custom REST API', value: 'custom_rest_api' },
+]
+
+export const DISCOVERY_METHOD_OPTIONS = [
+  { label: 'Auto-Aggregated (Recommended — All Sources)', value: 'auto' },
+  { label: 'Sitemap Only', value: 'sitemap' },
+  { label: 'RSS / Atom Feed', value: 'rss' },
+  { label: 'WordPress REST API', value: 'wordpress' },
+  { label: 'HTML Internal Links', value: 'html' },
+  { label: 'llms.txt', value: 'llms_txt' },
+  { label: 'Custom REST API', value: 'rest_api' },
+]
+
+type UiBadgeColor = 'primary' | 'secondary' | 'success' | 'info' | 'warning' | 'error' | 'neutral'
+
+const CONTENT_TYPE_META: Record<string, { label: string; color: UiBadgeColor }> = {
+  homepage: { label: 'Homepage', color: 'info' },
+  page: { label: 'Page', color: 'secondary' },
+  blog_index: { label: 'Blog Index', color: 'warning' },
+  blog_post: { label: 'Blog Post', color: 'primary' },
+  category: { label: 'Category', color: 'neutral' },
+  tag: { label: 'Tag', color: 'neutral' },
+  archive: { label: 'Archive', color: 'neutral' },
+  custom: { label: 'Custom', color: 'success' },
+}
+
+export function getContentTypeMeta(contentType: string): { label: string; color: UiBadgeColor } {
+  return CONTENT_TYPE_META[contentType] ?? {
+    label: humanizeCategory(contentType || 'page'),
+    color: 'neutral',
+  }
+}

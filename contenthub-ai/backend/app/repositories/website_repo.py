@@ -16,27 +16,25 @@ class WebsiteRepositoryProtocol(Protocol):
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
         website_type: str | None = None,
         search: str | None = None,
     ) -> tuple[list[Website], int]: ...
 
-    def list_by_brand(self, brand_id: int) -> list[Website]: ...
-
     def list_due_for_scan(self, *, now: datetime) -> list[Website]: ...
 
     def get_by_id(self, website_id: int) -> Website | None: ...
 
-    def get_by_brand_and_domain(self, brand_id: int, domain: str) -> Website | None: ...
+    def get_by_domain(self, domain: str) -> Website | None: ...
 
-    def count_by_brand(self, brand_id: int) -> int: ...
+    def count_by_category(self, category_id: int) -> int: ...
 
     def count_all(
         self,
         *,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
     ) -> int: ...
 
@@ -44,8 +42,8 @@ class WebsiteRepositoryProtocol(Protocol):
         self,
         *,
         now: datetime,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
     ) -> int: ...
 
     def create(self, data: dict[str, Any]) -> Website: ...
@@ -64,21 +62,27 @@ class SQLAlchemyWebsiteRepository:
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
         website_type: str | None = None,
         search: str | None = None,
     ) -> tuple[list[Website], int]:
         filters = []
-        if brand_id is not None:
-            filters.append(Website.brand_id == brand_id)
+        if category_id is not None:
+            filters.append(Website.category_id == category_id)
         if status:
             filters.append(Website.status == status.strip())
         if website_type:
             filters.append(Website.website_type == website_type.strip())
         if search:
             term = f"%{search.strip()}%"
-            filters.append(or_(Website.name.ilike(term), Website.domain.ilike(term)))
+            filters.append(
+                or_(
+                    Website.name.ilike(term),
+                    Website.brand_name.ilike(term),
+                    Website.domain.ilike(term),
+                )
+            )
 
         count_stmt = select(func.count()).select_from(Website)
         data_stmt = select(Website).order_by(Website.created_at.desc(), Website.id.desc())
@@ -93,10 +97,6 @@ class SQLAlchemyWebsiteRepository:
             .all()
         )
         return rows, total
-
-    def list_by_brand(self, brand_id: int) -> list[Website]:
-        stmt = select(Website).where(Website.brand_id == brand_id).order_by(Website.name.asc())
-        return list(self.db.execute(stmt).scalars().all())
 
     def list_due_for_scan(self, *, now: datetime) -> list[Website]:
         naive_now = now.replace(tzinfo=None)
@@ -114,29 +114,26 @@ class SQLAlchemyWebsiteRepository:
     def get_by_id(self, website_id: int) -> Website | None:
         return self.db.get(Website, website_id)
 
-    def get_by_brand_and_domain(self, brand_id: int, domain: str) -> Website | None:
-        stmt = select(Website).where(
-            Website.brand_id == brand_id,
-            Website.domain == domain.strip().lower(),
-        )
+    def get_by_domain(self, domain: str) -> Website | None:
+        stmt = select(Website).where(Website.domain == domain.strip().lower())
         return self.db.execute(stmt).scalar_one_or_none()
 
-    def count_by_brand(self, brand_id: int) -> int:
-        stmt = select(func.count()).select_from(Website).where(Website.brand_id == brand_id)
+    def count_by_category(self, category_id: int) -> int:
+        stmt = select(func.count()).select_from(Website).where(Website.category_id == category_id)
         return int(self.db.execute(stmt).scalar_one())
 
     def count_all(
         self,
         *,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
     ) -> int:
         stmt = select(func.count()).select_from(Website)
-        if brand_id is not None:
-            stmt = stmt.where(Website.brand_id == brand_id)
         if website_id is not None:
             stmt = stmt.where(Website.id == website_id)
+        if category_id is not None:
+            stmt = stmt.where(Website.category_id == category_id)
         if status is not None:
             stmt = stmt.where(Website.status == status)
         return int(self.db.execute(stmt).scalar_one())
@@ -145,8 +142,8 @@ class SQLAlchemyWebsiteRepository:
         self,
         *,
         now: datetime,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
     ) -> int:
         naive_now = now.replace(tzinfo=None)
         stmt = (
@@ -158,10 +155,10 @@ class SQLAlchemyWebsiteRepository:
                 or_(Website.next_scan_at.is_(None), Website.next_scan_at <= naive_now),
             )
         )
-        if brand_id is not None:
-            stmt = stmt.where(Website.brand_id == brand_id)
         if website_id is not None:
             stmt = stmt.where(Website.id == website_id)
+        if category_id is not None:
+            stmt = stmt.where(Website.category_id == category_id)
         return int(self.db.execute(stmt).scalar_one())
 
     def create(self, data: dict[str, Any]) -> Website:

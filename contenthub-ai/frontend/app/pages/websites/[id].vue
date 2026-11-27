@@ -1,96 +1,261 @@
 <script setup lang="ts">
-import { ArrowLeft, Compass, Play, RefreshCw, RotateCw, Wifi } from 'lucide-vue-next'
+import {
+  Activity,
+  ArrowLeft,
+  CheckCircle,
+  Compass,
+  ExternalLink,
+  ImagePlus,
+  Play,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  SearchCheck,
+  Trash2,
+} from 'lucide-vue-next'
 import type {
-  ArticleListResponse,
+  ContentListItem,
+  ContentListResponse,
+  ScanItem,
+  ScanItemListResponse,
   ScanLog,
   ScanLogListResponse,
   Website,
+  WebsiteCategory,
+  WebsiteCategoryListResponse,
   WebsiteConnectivity,
   WebsiteDiscoverResult,
+  WebsiteDiscoverySource,
+  WebsiteUrlRule,
 } from '~/types/api'
-import { extractErrorMessage, formatDateTime } from '~/utils/format'
+import {
+  DISCOVERY_METHOD_OPTIONS,
+  WEBSITE_TECHNOLOGY_OPTIONS,
+  extractErrorMessage,
+  formatDateTime,
+  getContentTypeMeta,
+} from '~/utils/format'
 
 const route = useRoute()
 const { request } = useApiClient()
+const uiStore = useUiStore()
 const toast = useToast()
 
 const websiteId = computed(() => Number(route.params.id))
 
 const website = ref<Website | null>(null)
-const scanLogs = ref<ScanLogListResponse | null>(null)
-const articles = ref<ArticleListResponse | null>(null)
-const activeScan = ref<ScanLog | null>(null)
-const connectivityResult = ref<WebsiteConnectivity | null>(null)
-const discoveryResult = ref<WebsiteDiscoverResult | null>(null)
+const categories = ref<WebsiteCategory[]>([])
+const sources = ref<WebsiteDiscoverySource[]>([])
+const urlRules = ref<WebsiteUrlRule[]>([])
+const scanLogs = ref<ScanLog[]>([])
+const websiteContents = ref<ContentListItem[]>([])
+const contentTabFilter = ref<string>('all')
 
 const loading = ref(true)
-const testing = ref(false)
-const discovering = ref(false)
-const startingScan = ref(false)
-const retryingScanId = ref<number | null>(null)
 const errorMessage = ref<string | null>(null)
-const activeTab = ref<'overview' | 'articles' | 'history' | 'discovery'>('overview')
+const activeTab = ref<'overview' | 'content' | 'scanner' | 'history' | 'settings'>('overview')
+const triggeringScan = ref(false)
+const testingConnectivity = ref(false)
+const discoveringSources = ref(false)
+const uploadingLogo = ref(false)
+const savingSettings = ref(false)
+
+const connectivityResult = ref<WebsiteConnectivity | null>(null)
+const discoverResult = ref<WebsiteDiscoverResult | null>(null)
+
+// Scan items inspection modal
+const inspectModalOpen = ref(false)
+const inspectedScan = ref<ScanLog | null>(null)
+const inspectItems = ref<ScanItem[]>([])
+const inspectLoading = ref(false)
+const inspectFilter = ref<'all' | 'failures' | 'pending'>('failures')
+
+// URL classification rule modal
+const ruleModalOpen = ref(false)
+const savingRule = ref(false)
+const ruleForm = ref({
+  pattern: '/guides/*',
+  target_content_type: 'blog_post',
+  match_mode: 'glob',
+  priority: 50,
+  notes: '',
+})
+
+// Website + Brand settings form
+const settingsForm = ref({
+  name: '',
+  brand_name: '',
+  category_id: '',
+  domain: '',
+  website_type: 'wordpress',
+  discovery_method: 'auto',
+  single_source_only: false,
+  status: 'active',
+  primary_language: 'en',
+  secondary_languages_text: '',
+  target_country: '',
+  target_audience: '',
+  tone: '',
+  brand_description: '',
+  target_keywords_text: '',
+  restricted_keywords_text: '',
+  default_hashtags_text: '',
+  default_cta: '',
+  writing_guidelines: '',
+  ai_instructions: '',
+  rss_url: '',
+  sitemap_url: '',
+  llms_url: '',
+  api_endpoint: '',
+  excluded_url_patterns_text: '',
+  scan_interval_minutes: 1440,
+  crawl_batch_size: 100,
+  crawl_max_urls_per_run: 1000,
+  auto_scan: true,
+})
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+const activeScan = computed(() =>
+  scanLogs.value.find((s) => s.status === 'pending' || s.status === 'processing') || null,
+)
+
+const resumableScan = computed(() =>
+  scanLogs.value.find(
+    (s) =>
+      (s.status === 'incomplete' || s.status === 'paused' || s.status === 'partially_completed')
+      && s.urls_pending_extraction > 0,
+  ) || null,
+)
+
+const canResumeScan = computed(
+  () => Boolean(resumableScan.value) || (website.value?.content_counts.pending ?? 0) > 0,
+)
+
+function parseCsvOrLines(raw: string): string[] {
+  return raw
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function syncSettingsForm(site: Website) {
+  settingsForm.value = {
+    name: site.name,
+    brand_name: site.brand_name,
+    category_id: site.category_id ? String(site.category_id) : '',
+    domain: site.domain,
+    website_type: site.website_type,
+    discovery_method: site.discovery_method,
+    single_source_only: site.single_source_only,
+    status: site.status,
+    primary_language: site.primary_language,
+    secondary_languages_text: site.secondary_languages.join(', '),
+    target_country: site.target_country || '',
+    target_audience: site.target_audience || '',
+    tone: site.tone || '',
+    brand_description: site.brand_description || '',
+    target_keywords_text: site.target_keywords.join(', '),
+    restricted_keywords_text: site.restricted_keywords.join(', '),
+    default_hashtags_text: site.default_hashtags.join(', '),
+    default_cta: site.default_cta || '',
+    writing_guidelines: site.writing_guidelines || '',
+    ai_instructions: site.ai_instructions || '',
+    rss_url: site.rss_url || '',
+    sitemap_url: site.sitemap_url || '',
+    llms_url: site.llms_url || '',
+    api_endpoint: site.api_endpoint || '',
+    excluded_url_patterns_text: site.excluded_url_patterns.join('\n'),
+    scan_interval_minutes: site.scan_interval_minutes,
+    crawl_batch_size: site.crawl_batch_size,
+    crawl_max_urls_per_run: site.crawl_max_urls_per_run,
+    auto_scan: site.auto_scan,
+  }
+}
+
 function stopPolling() {
-  if (pollTimer !== null) {
+  if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
   }
 }
 
-async function pollActiveScan(scanId: number) {
-  try {
-    const latest = await request<ScanLog>(`/api/v1/scans/${scanId}`)
-    activeScan.value = latest
-    if (!['pending', 'processing'].includes(latest.status)) {
-      stopPolling()
-      await Promise.all([loadWebsiteData(false)])
-      toast.add({
-        title: `Scan #${latest.id} ${latest.status}`,
-        description: `New: ${latest.new_articles}, Updated: ${latest.updated_articles}, Failed: ${latest.failed_articles}`,
-        color: latest.status === 'failed' ? 'error' : 'success',
-      })
-    }
-  }
-  catch {
+function ensurePolling() {
+  if (!activeScan.value) {
     stopPolling()
+    return
   }
+  if (pollTimer) {
+    return
+  }
+  pollTimer = setInterval(async () => {
+    try {
+      const [siteData, logsData] = await Promise.all([
+        request<Website>(`/api/v1/websites/${websiteId.value}`),
+        request<ScanLogListResponse>(`/api/v1/websites/${websiteId.value}/scan-logs`, {
+          query: { page: 1, page_size: 20 },
+        }),
+      ])
+      website.value = siteData
+      scanLogs.value = logsData.items
+      if (!activeScan.value) {
+        stopPolling()
+        await Promise.all([loadWebsiteContents(), loadSources()])
+      }
+    }
+    catch {
+      stopPolling()
+    }
+  }, 2000)
 }
 
-function startPolling(scanId: number) {
-  stopPolling()
-  void pollActiveScan(scanId)
-  pollTimer = setInterval(() => {
-    void pollActiveScan(scanId)
-  }, 2500)
+async function loadSources() {
+  sources.value = await request<WebsiteDiscoverySource[]>(`/api/v1/websites/${websiteId.value}/sources`)
 }
 
-async function loadWebsiteData(showSpinner = true) {
-  if (showSpinner) {
-    loading.value = true
-  }
+async function loadRules() {
+  urlRules.value = await request<WebsiteUrlRule[]>(`/api/v1/websites/${websiteId.value}/rules`)
+}
+
+async function loadWebsiteContents() {
+  const res = await request<ContentListResponse>('/api/v1/contents', {
+    query: {
+      website_id: websiteId.value,
+      tab: contentTabFilter.value,
+      page: 1,
+      page_size: 25,
+    },
+  })
+  websiteContents.value = res.items
+}
+
+async function loadAll() {
+  loading.value = true
   errorMessage.value = null
   try {
-    const [siteRes, logsRes, articlesRes] = await Promise.all([
+    const [siteData, catsData, srcData, rulesData, logsData, contentsData] = await Promise.all([
       request<Website>(`/api/v1/websites/${websiteId.value}`),
+      request<WebsiteCategoryListResponse>('/api/v1/website-categories', {
+        query: { include_archived: false },
+      }),
+      request<WebsiteDiscoverySource[]>(`/api/v1/websites/${websiteId.value}/sources`),
+      request<WebsiteUrlRule[]>(`/api/v1/websites/${websiteId.value}/rules`),
       request<ScanLogListResponse>(`/api/v1/websites/${websiteId.value}/scan-logs`, {
         query: { page: 1, page_size: 20 },
       }),
-      request<ArticleListResponse>('/api/v1/articles', {
-        query: { website_id: websiteId.value, page: 1, page_size: 20 },
+      request<ContentListResponse>('/api/v1/contents', {
+        query: { website_id: websiteId.value, tab: contentTabFilter.value, page: 1, page_size: 25 },
       }),
     ])
-    website.value = siteRes
-    scanLogs.value = logsRes
-    articles.value = articlesRes
-
-    const running = logsRes.items.find((s) => s.status === 'pending' || s.status === 'processing')
-    if (running) {
-      activeScan.value = running
-      startPolling(running.id)
-    }
+    website.value = siteData
+    categories.value = catsData.items
+    sources.value = srcData
+    urlRules.value = rulesData
+    scanLogs.value = logsData.items
+    websiteContents.value = contentsData.items
+    syncSettingsForm(siteData)
+    ensurePolling()
   }
   catch (err) {
     errorMessage.value = extractErrorMessage(err, 'Failed to load website details.')
@@ -100,99 +265,293 @@ async function loadWebsiteData(showSpinner = true) {
   }
 }
 
-async function runConnectivityTest() {
-  testing.value = true
+async function triggerScan(scanMode: 'discover_only' | 'full' | 'incremental' | 'retry_failed' | 'resume') {
+  triggeringScan.value = true
   try {
-    connectivityResult.value = await request<WebsiteConnectivity>(
-      `/api/v1/websites/${websiteId.value}/test`,
-      { method: 'POST' },
-    )
-    activeTab.value = 'discovery'
+    const created = await request<ScanLog>(`/api/v1/websites/${websiteId.value}/scan`, {
+      method: 'POST',
+      body: { scan_mode: scanMode },
+    })
+    scanLogs.value = [created, ...scanLogs.value]
+    ensurePolling()
     toast.add({
-      title: connectivityResult.value.reachable ? 'Website reachable' : 'Connectivity issue',
-      description: connectivityResult.value.reachable
-        ? `HTTP ${connectivityResult.value.status_code} (${connectivityResult.value.detected_website_type || 'detected'})`
-        : (connectivityResult.value.error || 'Could not reach target website.'),
-      color: connectivityResult.value.reachable ? 'success' : 'error',
+      title: `Scan #${created.id} queued (${scanMode.replace('_', ' ')})`,
+      description: 'Discovery and extraction progress updates automatically below.',
+      color: 'success',
     })
   }
   catch (err) {
-    toast.add({ title: 'Test failed', description: extractErrorMessage(err), color: 'error' })
+    toast.add({
+      title: 'Could not start scan',
+      description: extractErrorMessage(err, 'An active scan may already be running.'),
+      color: 'error',
+    })
   }
   finally {
-    testing.value = false
+    triggeringScan.value = false
   }
 }
 
-async function runDiscovery(applyDetected: boolean) {
-  discovering.value = true
+async function runConnectivityTest() {
+  testingConnectivity.value = true
   try {
-    discoveryResult.value = await request<WebsiteDiscoverResult>(
+    connectivityResult.value = await request<WebsiteConnectivity>(`/api/v1/websites/${websiteId.value}/test`, {
+      method: 'POST',
+    })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Connectivity check failed',
+      description: extractErrorMessage(err, 'Website connectivity check failed.'),
+      color: 'error',
+    })
+  }
+  finally {
+    testingConnectivity.value = false
+  }
+}
+
+async function runAutoDiscover(applyDetected: boolean) {
+  discoveringSources.value = true
+  try {
+    discoverResult.value = await request<WebsiteDiscoverResult>(
       `/api/v1/websites/${websiteId.value}/discover`,
       { method: 'POST', query: { apply: applyDetected } },
     )
-    activeTab.value = 'discovery'
     if (applyDetected) {
-      await loadWebsiteData(false)
+      await loadAll()
+      toast.add({ title: 'Discovery endpoints updated', color: 'success' })
     }
-    toast.add({
-      title: applyDetected ? 'Sources discovered & applied' : 'Sources discovered',
-      description: `Recommended method: ${discoveryResult.value.recommended_method}`,
-      color: 'success',
-    })
   }
   catch (err) {
-    toast.add({ title: 'Discovery failed', description: extractErrorMessage(err), color: 'error' })
+    toast.add({
+      title: 'Source discovery failed',
+      description: extractErrorMessage(err, 'Could not auto-detect website sources.'),
+      color: 'error',
+    })
   }
   finally {
-    discovering.value = false
+    discoveringSources.value = false
   }
 }
 
-async function triggerManualScan() {
-  startingScan.value = true
+async function toggleSource(src: WebsiteDiscoverySource) {
   try {
-    const scan = await request<ScanLog>(`/api/v1/websites/${websiteId.value}/scan`, {
+    const updated = await request<WebsiteDiscoverySource>(
+      `/api/v1/websites/${websiteId.value}/sources/${src.id}`,
+      { method: 'PATCH', body: { is_enabled: !src.is_enabled } },
+    )
+    sources.value = sources.value.map((s) => (s.id === src.id ? updated : s))
+  }
+  catch (err) {
+    toast.add({
+      title: 'Could not update source',
+      description: extractErrorMessage(err, 'Failed to toggle discovery source.'),
+      color: 'error',
+    })
+  }
+}
+
+async function addRule() {
+  if (!ruleForm.value.pattern.trim()) {
+    return
+  }
+  savingRule.value = true
+  try {
+    const created = await request<WebsiteUrlRule>(`/api/v1/websites/${websiteId.value}/rules`, {
       method: 'POST',
+      body: {
+        pattern: ruleForm.value.pattern.trim(),
+        target_content_type: ruleForm.value.target_content_type,
+        match_mode: ruleForm.value.match_mode,
+        priority: Number(ruleForm.value.priority) || 50,
+        notes: ruleForm.value.notes.trim() || null,
+      },
     })
-    activeScan.value = scan
-    startPolling(scan.id)
+    urlRules.value = [...urlRules.value, created]
+    ruleModalOpen.value = false
+    toast.add({ title: 'URL classification rule added', color: 'success' })
+  }
+  catch (err) {
     toast.add({
-      title: `Scan #${scan.id} started`,
-      description: 'Running in background without blocking dashboard requests.',
-      color: 'success',
+      title: 'Invalid rule',
+      description: extractErrorMessage(err, 'Could not save URL classification rule.'),
+      color: 'error',
     })
   }
-  catch (err) {
-    toast.add({ title: 'Could not start scan', description: extractErrorMessage(err), color: 'error' })
-  }
   finally {
-    startingScan.value = false
+    savingRule.value = false
   }
 }
 
-async function retryFailedScan(scanId: number) {
-  retryingScanId.value = scanId
+async function deleteRule(rule: WebsiteUrlRule) {
   try {
-    const scan = await request<ScanLog>(`/api/v1/scans/${scanId}/retry`, { method: 'POST' })
-    activeScan.value = scan
-    startPolling(scan.id)
-    toast.add({ title: `Retry scan #${scan.id} queued`, color: 'success' })
+    await request(`/api/v1/websites/${websiteId.value}/rules/${rule.id}`, { method: 'DELETE' })
+    urlRules.value = urlRules.value.filter((r) => r.id !== rule.id)
+    toast.add({ title: 'Rule removed', color: 'neutral' })
   }
   catch (err) {
-    toast.add({ title: 'Retry failed', description: extractErrorMessage(err), color: 'error' })
-  }
-  finally {
-    retryingScanId.value = null
+    toast.add({
+      title: 'Delete failed',
+      description: extractErrorMessage(err, 'Could not delete rule.'),
+      color: 'error',
+    })
   }
 }
 
-onMounted(async () => {
-  await loadWebsiteData(true)
-  const queryScanId = Number(route.query.scan)
-  if (Number.isFinite(queryScanId) && queryScanId > 0) {
-    startPolling(queryScanId)
+async function openInspectModal(scan: ScanLog) {
+  inspectedScan.value = scan
+  inspectModalOpen.value = true
+  await loadInspectedItems()
+}
+
+async function loadInspectedItems() {
+  if (!inspectedScan.value) {
+    return
   }
+  inspectLoading.value = true
+  try {
+    const query: Record<string, string | number | boolean> = { page: 1, page_size: 100 }
+    if (inspectFilter.value === 'failures') {
+      query.failures_only = true
+    }
+    else if (inspectFilter.value === 'pending') {
+      query.status = 'pending'
+    }
+    const res = await request<ScanItemListResponse>(`/api/v1/scans/${inspectedScan.value.id}/items`, { query })
+    inspectItems.value = res.items
+  }
+  catch (err) {
+    toast.add({
+      title: 'Could not load scan items',
+      description: extractErrorMessage(err, 'Failed to inspect scan item log.'),
+      color: 'error',
+    })
+  }
+  finally {
+    inspectLoading.value = false
+  }
+}
+
+async function retryHistoryScan(scanId: number) {
+  try {
+    const created = await request<ScanLog>(`/api/v1/scans/${scanId}/retry`, { method: 'POST' })
+    scanLogs.value = [created, ...scanLogs.value]
+    ensurePolling()
+    toast.add({ title: `Retry scan #${created.id} queued`, color: 'success' })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Retry failed',
+      description: extractErrorMessage(err, 'Could not retry scan.'),
+      color: 'error',
+    })
+  }
+}
+
+async function handleLogoUpload(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) {
+    return
+  }
+  uploadingLogo.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const updated = await request<Website>(`/api/v1/websites/${websiteId.value}/logo`, {
+      method: 'POST',
+      body: fd,
+    })
+    website.value = updated
+    toast.add({ title: 'Website logo uploaded', color: 'success' })
+    void uiStore.refreshGlobalSelectors()
+  }
+  catch (err) {
+    toast.add({
+      title: 'Logo upload failed',
+      description: extractErrorMessage(err, 'Unsupported or oversized image file.'),
+      color: 'error',
+    })
+  }
+  finally {
+    uploadingLogo.value = false
+    target.value = ''
+  }
+}
+
+async function saveWebsiteSettings() {
+  savingSettings.value = true
+  try {
+    const f = settingsForm.value
+    const payload = {
+      name: f.name.trim(),
+      brand_name: f.brand_name.trim() || f.name.trim(),
+      category_id: f.category_id ? Number(f.category_id) : null,
+      clear_category: !f.category_id,
+      domain: f.domain.trim(),
+      website_type: f.website_type,
+      discovery_method: f.discovery_method,
+      single_source_only: f.single_source_only,
+      status: f.status,
+      primary_language: f.primary_language.trim() || 'en',
+      secondary_languages: parseCsvOrLines(f.secondary_languages_text),
+      target_country: f.target_country.trim() || null,
+      target_audience: f.target_audience.trim() || null,
+      tone: f.tone.trim() || null,
+      brand_description: f.brand_description.trim() || null,
+      target_keywords: parseCsvOrLines(f.target_keywords_text),
+      restricted_keywords: parseCsvOrLines(f.restricted_keywords_text),
+      default_hashtags: parseCsvOrLines(f.default_hashtags_text),
+      default_cta: f.default_cta.trim() || null,
+      writing_guidelines: f.writing_guidelines.trim() || null,
+      ai_instructions: f.ai_instructions.trim() || null,
+      rss_url: f.rss_url.trim() || null,
+      sitemap_url: f.sitemap_url.trim() || null,
+      llms_url: f.llms_url.trim() || null,
+      api_endpoint: f.api_endpoint.trim() || null,
+      excluded_url_patterns: parseCsvOrLines(f.excluded_url_patterns_text),
+      scan_interval_minutes: Number(f.scan_interval_minutes) || 1440,
+      crawl_batch_size: Number(f.crawl_batch_size) || 100,
+      crawl_max_urls_per_run: Number(f.crawl_max_urls_per_run) || 1000,
+      auto_scan: f.auto_scan,
+    }
+    const updated = await request<Website>(`/api/v1/websites/${websiteId.value}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+    website.value = updated
+    syncSettingsForm(updated)
+    toast.add({ title: 'Website & brand settings saved', color: 'success' })
+    await Promise.all([loadSources(), uiStore.refreshGlobalSelectors()])
+  }
+  catch (err) {
+    toast.add({
+      title: 'Save failed',
+      description: extractErrorMessage(err, 'Could not update website configuration.'),
+      color: 'error',
+    })
+  }
+  finally {
+    savingSettings.value = false
+  }
+}
+
+watch(contentTabFilter, () => {
+  void loadWebsiteContents()
+})
+
+watch(inspectFilter, () => {
+  void loadInspectedItems()
+})
+
+watch(websiteId, () => {
+  stopPolling()
+  void loadAll()
+})
+
+onMounted(() => {
+  void loadAll()
 })
 
 onUnmounted(() => {
@@ -202,17 +561,74 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <UButton
-        to="/websites"
-        color="neutral"
-        variant="outline"
-        size="xs"
-      >
-        <ArrowLeft class="mr-1 h-3.5 w-3.5" />
-        Back to Websites
-      </UButton>
+    <!-- Top Header -->
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="flex items-start gap-3">
+        <UButton
+          to="/websites"
+          color="neutral"
+          variant="outline"
+          size="xs"
+        >
+          <ArrowLeft class="mr-1 h-3.5 w-3.5" />
+          Back
+        </UButton>
 
+        <div
+          v-if="website?.logo_url"
+          class="h-11 w-11 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-700"
+        >
+          <img
+            :src="website.logo_url"
+            :alt="website.brand_name"
+            class="h-full w-full object-contain"
+          >
+        </div>
+
+        <div>
+          <div class="flex flex-wrap items-center gap-2">
+            <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100">
+              {{ website?.name || `Website #${websiteId}` }}
+            </h1>
+            <UBadge
+              v-if="website?.category_name"
+              color="neutral"
+              variant="subtle"
+              size="xs"
+            >
+              {{ website.category_name }}
+            </UBadge>
+            <UBadge
+              v-if="website"
+              color="info"
+              variant="subtle"
+              size="xs"
+            >
+              {{ website.website_type }}
+            </UBadge>
+          </div>
+          <p
+            v-if="website"
+            class="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400"
+          >
+            <span>Brand: <strong class="text-slate-700 dark:text-slate-200">{{ website.brand_name }}</strong></span>
+            <span>·</span>
+            <span>{{ website.primary_language }}{{ website.target_country ? ` · ${website.target_country}` : '' }}</span>
+            <span>·</span>
+            <a
+              :href="`https://${website.domain}`"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-1 font-mono text-teal-600 hover:underline dark:text-teal-400"
+            >
+              {{ website.domain }}
+              <ExternalLink class="h-3 w-3" />
+            </a>
+          </p>
+        </div>
+      </div>
+
+      <!-- 5 Explicit Scan Actions -->
       <div
         v-if="website"
         class="flex flex-wrap items-center gap-2"
@@ -221,394 +637,889 @@ onUnmounted(() => {
           color="neutral"
           variant="outline"
           size="xs"
-          :loading="testing"
-          @click="runConnectivityTest"
+          :disabled="triggeringScan || Boolean(activeScan)"
+          @click="triggerScan('discover_only')"
         >
-          <Wifi class="mr-1 h-3.5 w-3.5" />
-          Test Connectivity
+          <SearchCheck class="mr-1 h-3.5 w-3.5" />
+          Discover URLs
+        </UButton>
+        <UButton
+          color="primary"
+          size="xs"
+          :disabled="triggeringScan || Boolean(activeScan)"
+          @click="triggerScan('full')"
+        >
+          <Play class="mr-1 h-3.5 w-3.5" />
+          Full Scan
         </UButton>
         <UButton
           color="neutral"
           variant="outline"
           size="xs"
-          :loading="discovering"
-          @click="runDiscovery(false)"
+          :disabled="triggeringScan || Boolean(activeScan)"
+          @click="triggerScan('incremental')"
         >
-          <Compass class="mr-1 h-3.5 w-3.5" />
-          Preview Sources
+          <RefreshCw class="mr-1 h-3.5 w-3.5" />
+          Check New Content
         </UButton>
         <UButton
-          color="primary"
+          v-if="website.content_counts.failed > 0"
+          color="error"
+          variant="subtle"
           size="xs"
-          :loading="startingScan"
-          :disabled="Boolean(activeScan && ['pending', 'processing'].includes(activeScan.status))"
-          @click="triggerManualScan"
+          :disabled="triggeringScan || Boolean(activeScan)"
+          @click="triggerScan('retry_failed')"
+        >
+          <RotateCcw class="mr-1 h-3.5 w-3.5" />
+          Retry Failed URLs ({{ website.content_counts.failed }})
+        </UButton>
+        <UButton
+          v-if="canResumeScan"
+          color="warning"
+          size="xs"
+          :disabled="triggeringScan || Boolean(activeScan)"
+          @click="triggerScan('resume')"
         >
           <Play class="mr-1 h-3.5 w-3.5" />
-          Trigger Manual Scan
+          Resume Incomplete Scan ({{ website.content_counts.pending }})
         </UButton>
+      </div>
+    </div>
+
+    <!-- Live Scan Progress Banner -->
+    <div
+      v-if="activeScan"
+      class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-teal-200 bg-teal-50/70 px-4 py-3 text-xs dark:border-teal-900 dark:bg-teal-950/40"
+    >
+      <div class="space-y-0.5">
+        <p class="font-semibold text-teal-900 dark:text-teal-200">
+          Scan #{{ activeScan.id }} running ({{ activeScan.scan_mode }}) — {{ activeScan.status }}
+        </p>
+        <p class="font-mono text-[11px] text-teal-700 dark:text-teal-300">
+          {{ activeScan.current_source || 'initializing' }}: {{ activeScan.current_url || 'Discovering endpoints...' }}
+        </p>
+      </div>
+      <div class="font-mono text-xs text-teal-800 dark:text-teal-200">
+        Found: {{ activeScan.urls_found }} · Extracted: {{ activeScan.articles_processed }} · Pending: {{ activeScan.urls_pending_extraction }}
       </div>
     </div>
 
     <AppErrorState
       v-if="errorMessage && !loading"
-      title="Website unavailable"
+      title="Could not load website workspace"
       :message="errorMessage"
       retryable
-      @retry="loadWebsiteData(true)"
+      @retry="loadAll()"
     />
 
     <USkeleton
-      v-if="loading"
+      v-else-if="loading"
       class="h-64 w-full"
     />
 
     <template v-else-if="website">
-      <!-- Header Card -->
-      <div class="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div class="flex items-center gap-2">
-              <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100">
-                {{ website.name }}
-              </h1>
-              <HealthStatusBadge :status="website.status" />
-            </div>
-            <p class="mt-0.5 font-mono text-xs text-slate-500">
-              https://{{ website.domain }} · Brand: {{ website.brand_name || `#${website.brand_id}` }} · {{ website.website_type }}
-            </p>
-          </div>
-          <div class="text-right text-xs text-slate-500">
-            <p>Articles Stored: <strong class="text-slate-900 dark:text-slate-100">{{ website.article_count }}</strong></p>
-            <p>Baseline: <strong class="text-slate-900 dark:text-slate-100">{{ website.initial_scan_completed ? 'Established' : `Pending (${website.baseline_mode})` }}</strong></p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Live Scan Progress Banner (Real Polled Counters — Zero Fabricated Percentages) -->
-      <div
-        v-if="activeScan"
-        class="rounded-lg border border-teal-200 bg-teal-50/70 p-4 dark:border-teal-900 dark:bg-teal-950/40"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex items-center gap-2">
-            <RefreshCw
-              v-if="['pending', 'processing'].includes(activeScan.status)"
-              class="h-4 w-4 animate-spin text-teal-700 dark:text-teal-300"
-            />
-            <span class="text-sm font-semibold text-teal-950 dark:text-teal-100">
-              Scan #{{ activeScan.id }} ({{ activeScan.trigger_type }} · {{ activeScan.scan_method }})
-            </span>
-            <HealthStatusBadge
-              :status="activeScan.status === 'completed' ? 'ok' : activeScan.status === 'partially_completed' ? 'warning' : activeScan.status"
-              :label="activeScan.status"
-            />
-          </div>
-          <span class="font-mono text-xs text-teal-800 dark:text-teal-200">
-            {{ activeScan.duration_ms !== null ? `Duration: ${(activeScan.duration_ms / 1000).toFixed(1)}s` : 'Polling live status...' }}
-          </span>
-        </div>
-
-        <div class="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:grid-cols-7">
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">URLs Found</p>
-            <p class="font-semibold">{{ activeScan.urls_found }}</p>
-          </div>
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">Processed</p>
-            <p class="font-semibold">{{ activeScan.articles_processed }}</p>
-          </div>
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">New</p>
-            <p class="font-semibold text-emerald-700 dark:text-emerald-400">{{ activeScan.new_articles }}</p>
-          </div>
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">Updated</p>
-            <p class="font-semibold text-blue-700 dark:text-blue-400">{{ activeScan.updated_articles }}</p>
-          </div>
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">Unchanged</p>
-            <p class="font-semibold">{{ activeScan.unchanged_articles }}</p>
-          </div>
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">Skipped</p>
-            <p class="font-semibold">{{ activeScan.skipped_articles }}</p>
-          </div>
-          <div class="rounded bg-white/80 p-2 dark:bg-slate-900/70">
-            <p class="text-slate-500">Failed</p>
-            <p class="font-semibold text-red-600 dark:text-red-400">{{ activeScan.failed_articles }}</p>
-          </div>
-        </div>
-
-        <p
-          v-if="activeScan.error_message"
-          class="mt-2 text-xs text-red-700 dark:text-red-300"
-        >
-          Error: {{ activeScan.error_message }}
-        </p>
-      </div>
-
-      <!-- Tabs -->
-      <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2 dark:border-slate-800">
-        <UButton
+      <!-- 5 Structured Tabs -->
+      <div class="flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800">
+        <button
           v-for="tab in [
-            { id: 'overview', label: 'Overview & Config' },
-            { id: 'articles', label: `Discovered Articles (${articles?.meta.total_items || 0})` },
-            { id: 'history', label: `Scan History (${scanLogs?.meta.total_items || 0})` },
-            { id: 'discovery', label: 'Discovery Source Preview' },
-          ] as const"
+            { id: 'overview', label: 'Overview' },
+            { id: 'content', label: `Content (${website.content_counts.total_discovered})` },
+            { id: 'scanner', label: 'Scanner & URL Rules' },
+            { id: 'history', label: `Scan History (${scanLogs.length})` },
+            { id: 'settings', label: 'Settings & Brand Profile' },
+          ]"
           :key="tab.id"
-          :color="activeTab === tab.id ? 'primary' : 'neutral'"
-          :variant="activeTab === tab.id ? 'solid' : 'ghost'"
-          size="xs"
-          @click="activeTab = tab.id"
+          type="button"
+          :class="[
+            'border-b-2 px-4 py-2 text-xs font-medium transition-colors',
+            activeTab === tab.id
+              ? 'border-teal-600 text-teal-700 dark:text-teal-300'
+              : 'border-transparent text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100',
+          ]"
+          @click="activeTab = tab.id as typeof activeTab"
         >
           {{ tab.label }}
-        </UButton>
+        </button>
       </div>
 
-      <!-- Overview & Configuration -->
+      <!-- TAB 1: OVERVIEW -->
       <div
         v-if="activeTab === 'overview'"
-        class="rounded-lg border border-slate-200 bg-white p-5 text-xs dark:border-slate-800 dark:bg-slate-900"
+        class="space-y-6"
       >
-        <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <div>
-            <dt class="text-slate-400">Discovery Method</dt>
-            <dd class="mt-0.5 font-mono font-medium">{{ website.discovery_method }}</dd>
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
+          <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
+            <p class="text-[11px] text-slate-500">Discovered URLs</p>
+            <p class="mt-1 text-lg font-semibold">{{ website.content_counts.total_discovered }}</p>
           </div>
-          <div>
-            <dt class="text-slate-400">Scan Frequency</dt>
-            <dd class="mt-0.5 font-medium">
-              Every {{ website.scan_interval_minutes }} min (Auto-scan: {{ website.auto_scan ? 'Enabled' : 'Disabled' }})
-            </dd>
+          <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
+            <p class="text-[11px] text-slate-500">Homepage</p>
+            <p class="mt-1 text-lg font-semibold">{{ website.content_counts.homepage }}</p>
           </div>
-          <div>
-            <dt class="text-slate-400">Next Scheduled Scan</dt>
-            <dd class="mt-0.5 font-medium">{{ formatDateTime(website.next_scan_at) }}</dd>
+          <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
+            <p class="text-[11px] text-slate-500">Pages</p>
+            <p class="mt-1 text-lg font-semibold">{{ website.content_counts.page }}</p>
           </div>
-          <div>
-            <dt class="text-slate-400">RSS / Atom URL</dt>
-            <dd class="mt-0.5 break-all font-mono">{{ website.rss_url || '-' }}</dd>
+          <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
+            <p class="text-[11px] text-slate-500">Blog Indexes</p>
+            <p class="mt-1 text-lg font-semibold">{{ website.content_counts.blog_index }}</p>
           </div>
-          <div>
-            <dt class="text-slate-400">Sitemap URL</dt>
-            <dd class="mt-0.5 break-all font-mono">{{ website.sitemap_url || '-' }}</dd>
+          <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
+            <p class="text-[11px] text-slate-500">Blog Posts</p>
+            <p class="mt-1 text-lg font-semibold">{{ website.content_counts.blog_post }}</p>
           </div>
-          <div>
-            <dt class="text-slate-400">llms.txt / API Endpoint</dt>
-            <dd class="mt-0.5 break-all font-mono">
-              {{ website.llms_url || '-' }}<br>{{ website.api_endpoint || '-' }}
-            </dd>
+          <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
+            <p class="text-[11px] text-slate-500">Pending / Failed</p>
+            <p class="mt-1 text-lg font-semibold">
+              {{ website.content_counts.pending }} /
+              <span :class="website.content_counts.failed > 0 ? 'text-rose-600' : ''">{{ website.content_counts.failed }}</span>
+            </p>
           </div>
-          <div>
-            <dt class="text-slate-400">Included URL Patterns</dt>
-            <dd class="mt-0.5 font-mono">
-              {{ website.article_url_patterns.length ? website.article_url_patterns.join(', ') : 'All non-root same-site URLs' }}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-slate-400">Excluded URL Patterns</dt>
-            <dd class="mt-0.5 font-mono">
-              {{ website.excluded_url_patterns.length ? website.excluded_url_patterns.join(', ') : 'Default exclusions only' }}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-slate-400">Last Successful Scan</dt>
-            <dd class="mt-0.5 font-medium">{{ formatDateTime(website.last_successful_scan_at) }}</dd>
-          </div>
-        </dl>
-      </div>
-
-      <!-- Discovered Articles -->
-      <div
-        v-else-if="activeTab === 'articles'"
-        class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
-      >
-        <div
-          v-if="!articles || articles.items.length === 0"
-          class="p-6"
-        >
-          <AppEmptyState
-            title="No articles discovered for this website yet"
-            description="Trigger a manual scan to discover and extract articles into your Content Library."
-          />
         </div>
-        <div
-          v-else
-          class="overflow-x-auto"
-        >
-          <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
-            <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
-              <tr>
-                <th class="px-4 py-2.5 font-medium">Title</th>
-                <th class="px-4 py-2.5 font-medium">Status</th>
-                <th class="px-4 py-2.5 font-medium">Words</th>
-                <th class="px-4 py-2.5 font-medium">Published</th>
-                <th class="px-4 py-2.5 font-medium">Discovered</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
-              <tr
-                v-for="art in articles.items"
-                :key="art.id"
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
+            <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              Brand Identity & Writing Guidance
+            </h2>
+            <dl class="mt-3 space-y-2">
+              <div class="flex justify-between gap-2">
+                <dt class="text-slate-500">Brand Name:</dt>
+                <dd class="font-medium">{{ website.brand_name }}</dd>
+              </div>
+              <div class="flex justify-between gap-2">
+                <dt class="text-slate-500">Tone / Audience:</dt>
+                <dd>{{ website.tone || 'Default' }} · {{ website.target_audience || 'General' }}</dd>
+              </div>
+              <div class="flex justify-between gap-2">
+                <dt class="text-slate-500">Keywords:</dt>
+                <dd class="text-right">{{ website.target_keywords.join(', ') || 'None configured' }}</dd>
+              </div>
+              <div class="flex justify-between gap-2">
+                <dt class="text-slate-500">Default Hashtags:</dt>
+                <dd class="text-right">{{ website.default_hashtags.join(' ') || 'None configured' }}</dd>
+              </div>
+            </dl>
+            <p
+              v-if="website.writing_guidelines"
+              class="mt-3 rounded bg-slate-50 p-2.5 text-slate-600 dark:bg-slate-950 dark:text-slate-300"
+            >
+              {{ website.writing_guidelines }}
+            </p>
+          </div>
+
+          <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
+            <div class="flex items-center justify-between">
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Diagnostics & Source Probe
+              </h2>
+              <div class="flex gap-2">
+                <UButton
+                  size="xs"
+                  color="neutral"
+                  variant="outline"
+                  :loading="testingConnectivity"
+                  @click="runConnectivityTest"
+                >
+                  <Activity class="mr-1 h-3.5 w-3.5" />
+                  Test Connectivity
+                </UButton>
+                <UButton
+                  size="xs"
+                  color="neutral"
+                  variant="outline"
+                  :loading="discoveringSources"
+                  @click="runAutoDiscover(true)"
+                >
+                  <Compass class="mr-1 h-3.5 w-3.5" />
+                  Detect Sources
+                </UButton>
+              </div>
+            </div>
+
+            <div class="mt-3 space-y-2 text-slate-600 dark:text-slate-300">
+              <p>Last scanned: {{ formatDateTime(website.last_scanned_at) }}</p>
+              <p>Next auto-scan: {{ formatDateTime(website.next_scan_at) }}</p>
+              <p>Batching: {{ website.crawl_batch_size }} URLs/batch · max {{ website.crawl_max_urls_per_run }} URLs/run</p>
+            </div>
+
+            <div
+              v-if="connectivityResult"
+              class="mt-3 rounded border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-950"
+            >
+              <p class="flex items-center gap-1.5 font-medium">
+                <CheckCircle class="h-3.5 w-3.5 text-teal-600" />
+                {{ connectivityResult.reachable ? `Reachable (HTTP ${connectivityResult.status_code})` : 'Unreachable' }}
+                <span v-if="connectivityResult.detected_website_type">· Detected {{ connectivityResult.detected_website_type }}</span>
+              </p>
+              <p
+                v-if="connectivityResult.error"
+                class="mt-1 text-rose-600"
               >
-                <td class="px-4 py-2.5">
-                  <NuxtLink
-                    :to="`/content-library/${art.id}`"
-                    class="font-medium text-teal-700 hover:underline dark:text-teal-300"
-                  >
-                    {{ art.title }}
-                  </NuxtLink>
-                </td>
-                <td class="px-4 py-2.5">
-                  <HealthStatusBadge :status="art.status === 'optimized' || art.status === 'extracted' ? 'ok' : art.status" :label="art.status" />
-                </td>
-                <td class="px-4 py-2.5">{{ art.word_count }}</td>
-                <td class="px-4 py-2.5 text-slate-500">{{ formatDateTime(art.published_at) }}</td>
-                <td class="px-4 py-2.5 text-slate-500">{{ formatDateTime(art.discovered_at) }}</td>
-              </tr>
-            </tbody>
-          </table>
+                {{ connectivityResult.error }}
+              </p>
+            </div>
+
+            <div
+              v-if="discoverResult"
+              class="mt-2 rounded border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-950"
+            >
+              <p class="font-medium">
+                Recommended: {{ discoverResult.recommended_method }} · Sitemaps: {{ discoverResult.sitemap_urls.length }} · RSS: {{ discoverResult.rss_urls.length }}
+              </p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Scan History -->
+      <!-- TAB 2: CONTENT -->
       <div
-        v-else-if="activeTab === 'history'"
-        class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
-      >
-        <div
-          v-if="!scanLogs || scanLogs.items.length === 0"
-          class="p-6"
-        >
-          <AppEmptyState
-            title="No scan logs recorded"
-            description="Every manual, scheduled, and retried scan will appear here."
-          />
-        </div>
-        <div
-          v-else
-          class="overflow-x-auto"
-        >
-          <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
-            <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
-              <tr>
-                <th class="px-4 py-2.5 font-medium">ID</th>
-                <th class="px-4 py-2.5 font-medium">Method / Trigger</th>
-                <th class="px-4 py-2.5 font-medium">Status</th>
-                <th class="px-4 py-2.5 font-medium">Found / New / Updated / Failed</th>
-                <th class="px-4 py-2.5 font-medium">Duration</th>
-                <th class="px-4 py-2.5 font-medium">Started</th>
-                <th class="px-4 py-2.5 font-medium text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
-              <tr
-                v-for="log in scanLogs.items"
-                :key="log.id"
-              >
-                <td class="px-4 py-2.5 font-mono">#{{ log.id }}</td>
-                <td class="px-4 py-2.5 font-mono text-[11px]">{{ log.scan_method }} / {{ log.trigger_type }}</td>
-                <td class="px-4 py-2.5">
-                  <HealthStatusBadge :status="log.status === 'completed' ? 'ok' : log.status === 'partially_completed' ? 'warning' : log.status" :label="log.status" />
-                  <p
-                    v-if="log.error_message"
-                    class="mt-1 max-w-xs truncate text-[11px] text-red-600 dark:text-red-400"
-                    :title="log.error_message"
-                  >
-                    {{ log.error_message }}
-                  </p>
-                </td>
-                <td class="px-4 py-2.5 font-mono text-[11px]">
-                  {{ log.urls_found }} / +{{ log.new_articles }} / ~{{ log.updated_articles }} / !{{ log.failed_articles }}
-                </td>
-                <td class="px-4 py-2.5 text-slate-500">
-                  {{ log.duration_ms !== null ? `${(log.duration_ms / 1000).toFixed(1)}s` : '-' }}
-                </td>
-                <td class="px-4 py-2.5 text-slate-500">{{ formatDateTime(log.started_at || log.created_at) }}</td>
-                <td class="px-4 py-2.5 text-right">
-                  <UButton
-                    v-if="['failed', 'partially_completed', 'cancelled'].includes(log.status)"
-                    color="neutral"
-                    variant="outline"
-                    size="xs"
-                    :loading="retryingScanId === log.id"
-                    @click="retryFailedScan(log.id)"
-                  >
-                    <RotateCw class="mr-1 h-3 w-3" />
-                    Retry
-                  </UButton>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Discovery Source Preview -->
-      <div
-        v-else-if="activeTab === 'discovery'"
-        class="space-y-4 rounded-lg border border-slate-200 bg-white p-5 text-xs dark:border-slate-800 dark:bg-slate-900"
+        v-else-if="activeTab === 'content'"
+        class="space-y-4"
       >
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <p class="font-semibold text-slate-900 dark:text-slate-100">
-            SSRF-Validated Source Discovery Preview
-          </p>
+          <div class="flex flex-wrap gap-1.5">
+            <UButton
+              v-for="t in [
+                { key: 'all', label: 'All' },
+                { key: 'homepage', label: 'Homepage' },
+                { key: 'pages', label: 'Pages' },
+                { key: 'blog_posts', label: 'Blog Posts' },
+                { key: 'blog_indexes', label: 'Blog Indexes' },
+                { key: 'other', label: 'Other' },
+                { key: 'failed', label: 'Failed' },
+              ]"
+              :key="t.key"
+              size="xs"
+              :color="contentTabFilter === t.key ? 'primary' : 'neutral'"
+              :variant="contentTabFilter === t.key ? 'solid' : 'outline'"
+              @click="contentTabFilter = t.key"
+            >
+              {{ t.label }}
+            </UButton>
+          </div>
+
           <UButton
-            color="primary"
-            variant="soft"
+            :to="`/content-library?website_id=${website.id}`"
+            color="neutral"
+            variant="outline"
             size="xs"
-            :loading="discovering"
-            @click="runDiscovery(true)"
           >
-            Auto-Discover & Apply Endpoints
+            Open Full Content Library
           </UButton>
         </div>
 
-        <div
-          v-if="connectivityResult"
-          class="rounded-md border border-slate-200 p-3 dark:border-slate-800"
-        >
-          <p class="font-semibold">Connectivity Test</p>
-          <p class="mt-1">
-            Reachable: <strong>{{ connectivityResult.reachable ? 'Yes' : 'No' }}</strong>
-            · Status: <code>{{ connectivityResult.status_code ?? 'N/A' }}</code>
-            · Detected Type: <code>{{ connectivityResult.detected_website_type || 'unknown' }}</code>
-          </p>
-          <p
-            v-if="connectivityResult.title"
-            class="mt-1 text-slate-500"
-          >
-            Title: {{ connectivityResult.title }}
-          </p>
-          <p
-            v-if="connectivityResult.error"
-            class="mt-1 text-red-600"
-          >
-            {{ connectivityResult.error }}
-          </p>
+        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
+            <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
+              <tr>
+                <th class="px-4 py-2.5 font-medium">Title & URL</th>
+                <th class="px-4 py-2.5 font-medium">Type</th>
+                <th class="px-4 py-2.5 font-medium">Extraction</th>
+                <th class="px-4 py-2.5 font-medium">Sources</th>
+                <th class="px-4 py-2.5 font-medium">Words</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
+              <tr
+                v-for="item in websiteContents"
+                :key="item.id"
+                class="hover:bg-slate-50/70 dark:hover:bg-slate-800/40"
+              >
+                <td class="px-4 py-2.5">
+                  <NuxtLink
+                    :to="`/content-library/${item.id}`"
+                    class="font-medium text-teal-700 hover:underline dark:text-teal-300"
+                  >
+                    {{ item.title }}
+                  </NuxtLink>
+                  <p class="font-mono text-[11px] text-slate-500">{{ item.canonical_url }}</p>
+                </td>
+                <td class="px-4 py-2.5">
+                  <UBadge
+                    :color="getContentTypeMeta(item.content_type).color"
+                    variant="subtle"
+                    size="xs"
+                  >
+                    {{ getContentTypeMeta(item.content_type).label }}
+                  </UBadge>
+                </td>
+                <td class="px-4 py-2.5">
+                  <HealthStatusBadge
+                    :status="item.extraction_status === 'extracted' ? 'ok' : item.extraction_status === 'pending' ? 'warning' : 'error'"
+                    :label="item.extraction_status"
+                  />
+                </td>
+                <td class="px-4 py-2.5 font-mono text-[11px] text-slate-500">
+                  {{ item.discovery_sources.join(', ') }}
+                </td>
+                <td class="px-4 py-2.5 font-mono">{{ item.word_count }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-
-        <div
-          v-if="discoveryResult"
-          class="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800"
-        >
-          <p class="font-semibold">
-            Discovered Endpoints (Recommended: <code>{{ discoveryResult.recommended_method }}</code>)
-          </p>
-          <p>WordPress REST API: <code>{{ discoveryResult.wordpress_api_url || 'Not detected' }}</code></p>
-          <p>RSS / Atom Feeds: <code>{{ discoveryResult.rss_urls.length ? discoveryResult.rss_urls.join(', ') : 'None found' }}</code></p>
-          <p>XML Sitemaps: <code>{{ discoveryResult.sitemap_urls.length ? discoveryResult.sitemap_urls.join(', ') : 'None found' }}</code></p>
-          <p>llms.txt: <code>{{ discoveryResult.llms_urls.length ? discoveryResult.llms_urls.join(', ') : 'Not detected' }}</code></p>
-        </div>
-
-        <AppEmptyState
-          v-if="!connectivityResult && !discoveryResult"
-          title="No probe executed yet"
-          description="Click 'Test Connectivity' or 'Preview Sources' above to inspect live RSS, sitemap, WordPress API, and llms.txt availability."
-        />
       </div>
+
+      <!-- TAB 3: SCANNER & URL RULES -->
+      <div
+        v-else-if="activeTab === 'scanner'"
+        class="space-y-6"
+      >
+        <!-- Discovery Sources Endpoint Health -->
+        <section class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Discovery Endpoints (Isolated Per-Source Caching)
+              </h2>
+              <p class="text-xs text-slate-500">
+                A 304 Not Modified on one endpoint preserves existing URLs without blocking sitemaps, feeds, or homepage links.
+              </p>
+            </div>
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="outline"
+              :loading="discoveringSources"
+              @click="runAutoDiscover(true)"
+            >
+              Re-Detect Sources
+            </UButton>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
+              <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
+                <tr>
+                  <th class="px-4 py-2.5 font-medium">Type</th>
+                  <th class="px-4 py-2.5 font-medium">Endpoint URL</th>
+                  <th class="px-4 py-2.5 font-medium">Last Status</th>
+                  <th class="px-4 py-2.5 font-medium">URLs Found</th>
+                  <th class="px-4 py-2.5 font-medium">ETag / Cache</th>
+                  <th class="px-4 py-2.5 font-medium">Enabled</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
+                <tr
+                  v-for="src in sources"
+                  :key="src.id"
+                >
+                  <td class="px-4 py-2.5 font-mono">{{ src.source_type }}</td>
+                  <td class="max-w-xs truncate px-4 py-2.5 font-mono text-[11px]">
+                    {{ src.endpoint_url }}
+                    <p
+                      v-if="src.last_error"
+                      class="text-rose-600"
+                    >
+                      {{ src.last_error }}
+                    </p>
+                  </td>
+                  <td class="px-4 py-2.5 font-mono">{{ src.last_status_code ?? '—' }}</td>
+                  <td class="px-4 py-2.5 font-mono">{{ src.last_urls_found }}</td>
+                  <td class="px-4 py-2.5 font-mono text-[11px] text-slate-500">
+                    {{ src.etag ? 'ETag saved' : (src.last_modified_header ? 'Last-Mod saved' : 'None') }}
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <USwitch
+                      :model-value="src.is_enabled"
+                      @update:model-value="toggleSource(src)"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- URL Classification Rules -->
+        <section class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Custom URL Classification Rules
+              </h2>
+              <p class="text-xs text-slate-500">
+                Override deterministic path rules per website (lower priority number runs first).
+              </p>
+            </div>
+            <UButton
+              size="xs"
+              color="primary"
+              @click="ruleModalOpen = true"
+            >
+              <Plus class="mr-1 h-3.5 w-3.5" />
+              Add URL Rule
+            </UButton>
+          </div>
+
+          <div
+            v-if="urlRules.length === 0"
+            class="p-4 text-xs text-slate-500"
+          >
+            Using default deterministic URL classification (`/` homepage, `/blog/` blog index, `/blog/*` blog post, `/category/*`, `/tag/*`, `/author/*`, others page).
+          </div>
+
+          <div
+            v-else
+            class="overflow-x-auto"
+          >
+            <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
+              <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
+                <tr>
+                  <th class="px-4 py-2.5 font-medium">Priority</th>
+                  <th class="px-4 py-2.5 font-medium">Pattern</th>
+                  <th class="px-4 py-2.5 font-medium">Mode</th>
+                  <th class="px-4 py-2.5 font-medium">Target Type</th>
+                  <th class="px-4 py-2.5 font-medium">Notes</th>
+                  <th class="px-4 py-2.5 text-right font-medium">Delete</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
+                <tr
+                  v-for="rule in urlRules"
+                  :key="rule.id"
+                >
+                  <td class="px-4 py-2.5 font-mono">{{ rule.priority }}</td>
+                  <td class="px-4 py-2.5 font-mono font-semibold">{{ rule.pattern }}</td>
+                  <td class="px-4 py-2.5 font-mono">{{ rule.match_mode }}</td>
+                  <td class="px-4 py-2.5">
+                    <UBadge
+                      :color="getContentTypeMeta(rule.target_content_type).color"
+                      variant="subtle"
+                      size="xs"
+                    >
+                      {{ rule.target_content_type }}
+                    </UBadge>
+                  </td>
+                  <td class="px-4 py-2.5 text-slate-500">{{ rule.notes || '—' }}</td>
+                  <td class="px-4 py-2.5 text-right">
+                    <UButton
+                      color="error"
+                      variant="ghost"
+                      size="xs"
+                      @click="deleteRule(rule)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </UButton>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 4: SCAN HISTORY -->
+      <div
+        v-else-if="activeTab === 'history'"
+        class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+      >
+        <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
+          <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
+            <tr>
+              <th class="px-4 py-2.5 font-medium">Scan #</th>
+              <th class="px-4 py-2.5 font-medium">Mode & Method</th>
+              <th class="px-4 py-2.5 font-medium">Status</th>
+              <th class="px-4 py-2.5 font-medium">Found / Extracted / Pending</th>
+              <th class="px-4 py-2.5 font-medium">New / Upd / Fail / Excl</th>
+              <th class="px-4 py-2.5 font-medium">Created</th>
+              <th class="px-4 py-2.5 text-right font-medium">Diagnostics</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 dark:divide-slate-800/80">
+            <tr
+              v-for="scan in scanLogs"
+              :key="scan.id"
+              class="hover:bg-slate-50/70 dark:hover:bg-slate-800/40"
+            >
+              <td class="px-4 py-2.5 font-mono">#{{ scan.id }}</td>
+              <td class="px-4 py-2.5 font-mono text-[11px]">{{ scan.scan_mode }} · {{ scan.scan_method }}</td>
+              <td class="px-4 py-2.5">
+                <HealthStatusBadge
+                  :status="scan.status === 'completed' ? 'ok' : ['partially_completed', 'incomplete', 'paused'].includes(scan.status) ? 'warning' : scan.status"
+                  :label="scan.status"
+                />
+                <p
+                  v-if="scan.error_message"
+                  class="mt-1 max-w-xs truncate text-[11px] text-slate-500"
+                  :title="scan.error_message"
+                >
+                  {{ scan.error_message }}
+                </p>
+              </td>
+              <td class="px-4 py-2.5 font-mono">
+                {{ scan.urls_found }} / {{ scan.articles_processed }} / {{ scan.urls_pending_extraction }}
+              </td>
+              <td class="px-4 py-2.5 font-mono text-[11px]">
+                +{{ scan.new_articles }} / ~{{ scan.updated_articles }} / !{{ scan.failed_articles }} / -{{ scan.excluded_count }}
+              </td>
+              <td class="px-4 py-2.5 whitespace-nowrap text-slate-500">
+                {{ formatDateTime(scan.created_at) }}
+              </td>
+              <td class="px-4 py-2.5 text-right">
+                <div class="flex justify-end gap-1.5">
+                  <UButton
+                    size="xs"
+                    color="neutral"
+                    variant="outline"
+                    @click="openInspectModal(scan)"
+                  >
+                    Inspect Items
+                  </UButton>
+                  <UButton
+                    v-if="['failed', 'partially_completed', 'incomplete', 'paused'].includes(scan.status)"
+                    size="xs"
+                    color="primary"
+                    variant="subtle"
+                    @click="retryHistoryScan(scan.id)"
+                  >
+                    Retry
+                  </UButton>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- TAB 5: SETTINGS & BRAND PROFILE -->
+      <form
+        v-else
+        class="space-y-6 rounded-lg border border-slate-200 bg-white p-5 text-xs dark:border-slate-800 dark:bg-slate-900"
+        @submit.prevent="saveWebsiteSettings"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4 dark:border-slate-800">
+          <div class="flex items-center gap-3">
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
+              <ImagePlus class="h-3.5 w-3.5" />
+              <span>{{ uploadingLogo ? 'Uploading...' : 'Upload Brand Logo' }}</span>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                class="hidden"
+                :disabled="uploadingLogo"
+                @change="handleLogoUpload"
+              >
+            </label>
+            <span
+              v-if="website.logo_url"
+              class="text-slate-500"
+            >
+              Logo saved
+            </span>
+          </div>
+
+          <UButton
+            type="submit"
+            color="primary"
+            size="sm"
+            :loading="savingSettings"
+          >
+            <Save class="mr-1.5 h-3.5 w-3.5" />
+            Save All Changes
+          </UButton>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div>
+            <label class="mb-1 block font-medium">Website Name *</label>
+            <UInput v-model="settingsForm.name" required />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Brand Name *</label>
+            <UInput v-model="settingsForm.brand_name" required />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Domain *</label>
+            <UInput v-model="settingsForm.domain" required />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Website Category</label>
+            <select
+              v-model="settingsForm.category_id"
+              class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option value="">Uncategorized</option>
+              <option
+                v-for="cat in categories"
+                :key="cat.id"
+                :value="String(cat.id)"
+              >
+                {{ cat.name }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Technology</label>
+            <select
+              v-model="settingsForm.website_type"
+              class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option
+                v-for="opt in WEBSITE_TECHNOLOGY_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Status</label>
+            <select
+              v-model="settingsForm.status"
+              class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option value="active">Active</option>
+              <option value="paused">Paused</option>
+              <option value="archived">Archived</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Primary Language *</label>
+            <UInput v-model="settingsForm.primary_language" required />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Target Country</label>
+            <UInput v-model="settingsForm.target_country" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Target Audience</label>
+            <UInput v-model="settingsForm.target_audience" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Tone</label>
+            <UInput v-model="settingsForm.tone" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Target Keywords</label>
+            <UInput v-model="settingsForm.target_keywords_text" placeholder="comma-separated" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Default Hashtags</label>
+            <UInput v-model="settingsForm.default_hashtags_text" placeholder="#Tag1, #Tag2" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Discovery Mode</label>
+            <select
+              v-model="settingsForm.discovery_method"
+              class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option
+                v-for="opt in DISCOVERY_METHOD_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Batch Size (URLs)</label>
+            <UInput v-model="settingsForm.crawl_batch_size" type="number" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Max URLs Per Run</label>
+            <UInput v-model="settingsForm.crawl_max_urls_per_run" type="number" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Sitemap URL</label>
+            <UInput v-model="settingsForm.sitemap_url" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">RSS URL</label>
+            <UInput v-model="settingsForm.rss_url" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Scan Interval (minutes)</label>
+            <UInput v-model="settingsForm.scan_interval_minutes" type="number" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div>
+            <label class="mb-1 block font-medium">Writing Guidelines</label>
+            <textarea
+              v-model="settingsForm.writing_guidelines"
+              rows="3"
+              class="w-full rounded-md border border-slate-200 p-2 dark:border-slate-700 dark:bg-slate-950"
+            />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">AI Instructions</label>
+            <textarea
+              v-model="settingsForm.ai_instructions"
+              rows="3"
+              class="w-full rounded-md border border-slate-200 p-2 dark:border-slate-700 dark:bg-slate-950"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label class="mb-1 block font-medium">Excluded URL Patterns (one per line)</label>
+          <textarea
+            v-model="settingsForm.excluded_url_patterns_text"
+            rows="3"
+            class="w-full rounded-md border border-slate-200 p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-950"
+          />
+        </div>
+
+        <div class="flex flex-wrap gap-6">
+          <label class="flex items-center gap-2">
+            <USwitch v-model="settingsForm.auto_scan" />
+            <span>Enable Scheduled Auto-Scan</span>
+          </label>
+          <label class="flex items-center gap-2">
+            <USwitch v-model="settingsForm.single_source_only" />
+            <span>Single-Source Manual Override Mode</span>
+          </label>
+        </div>
+      </form>
     </template>
+
+    <!-- Add URL Rule Modal -->
+    <UModal
+      v-model:open="ruleModalOpen"
+      title="Add URL Classification Rule"
+    >
+      <template #body>
+        <form
+          class="space-y-3 text-xs"
+          @submit.prevent="addRule"
+        >
+          <div>
+            <label class="mb-1 block font-medium">URL Path Pattern *</label>
+            <UInput
+              v-model="ruleForm.pattern"
+              placeholder="e.g., /game/* or /promo/*"
+              required
+              class="w-full"
+            />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block font-medium">Match Mode</label>
+              <select
+                v-model="ruleForm.match_mode"
+                class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="glob">Glob (*)</option>
+                <option value="prefix">Prefix</option>
+                <option value="exact">Exact</option>
+                <option value="regex">Regex</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block font-medium">Target Content Type</label>
+              <select
+                v-model="ruleForm.target_content_type"
+                class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="blog_post">Blog Post</option>
+                <option value="blog_index">Blog Index</option>
+                <option value="page">Page</option>
+                <option value="category">Category</option>
+                <option value="tag">Tag</option>
+                <option value="archive">Archive</option>
+                <option value="custom">Custom</option>
+                <option value="exclude">Exclude</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Priority (lower = higher precedence)</label>
+            <UInput v-model="ruleForm.priority" type="number" class="w-32" />
+          </div>
+          <div>
+            <label class="mb-1 block font-medium">Notes</label>
+            <UInput v-model="ruleForm.notes" placeholder="Optional explanation" class="w-full" />
+          </div>
+          <div class="flex justify-end gap-2 pt-2">
+            <UButton color="neutral" variant="outline" size="xs" @click="ruleModalOpen = false">Cancel</UButton>
+            <UButton type="submit" color="primary" size="xs" :loading="savingRule">Add Rule</UButton>
+          </div>
+        </form>
+      </template>
+    </UModal>
+
+    <!-- Inspect Scan Items Modal -->
+    <UModal
+      v-model:open="inspectModalOpen"
+      :title="inspectedScan ? `Scan #${inspectedScan.id} URL Diagnostics` : 'Scan URL Diagnostics'"
+    >
+      <template #body>
+        <div class="space-y-3 text-xs">
+          <div class="flex flex-wrap gap-1.5">
+            <UButton
+              size="xs"
+              :color="inspectFilter === 'failures' ? 'primary' : 'neutral'"
+              :variant="inspectFilter === 'failures' ? 'solid' : 'outline'"
+              @click="inspectFilter = 'failures'"
+            >
+              Failed & Excluded
+            </UButton>
+            <UButton
+              size="xs"
+              :color="inspectFilter === 'pending' ? 'primary' : 'neutral'"
+              :variant="inspectFilter === 'pending' ? 'solid' : 'outline'"
+              @click="inspectFilter = 'pending'"
+            >
+              Pending
+            </UButton>
+            <UButton
+              size="xs"
+              :color="inspectFilter === 'all' ? 'primary' : 'neutral'"
+              :variant="inspectFilter === 'all' ? 'solid' : 'outline'"
+              @click="inspectFilter = 'all'"
+            >
+              All Discovered
+            </UButton>
+          </div>
+
+          <p
+            v-if="inspectLoading"
+            class="py-4 text-slate-500"
+          >
+            Loading scan item diagnostics...
+          </p>
+          <p
+            v-else-if="inspectItems.length === 0"
+            class="py-4 text-slate-500"
+          >
+            No matching URLs recorded under this filter.
+          </p>
+          <div
+            v-else
+            class="max-h-96 space-y-2 overflow-y-auto"
+          >
+            <div
+              v-for="item in inspectItems"
+              :key="item.id"
+              class="rounded border border-slate-200 p-2.5 dark:border-slate-800"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-mono text-[11px] text-slate-700 dark:text-slate-200">{{ item.normalized_url }}</span>
+                <UBadge
+                  :color="item.status === 'failed' ? 'error' : item.status === 'excluded' ? 'neutral' : 'success'"
+                  variant="subtle"
+                  size="xs"
+                >
+                  {{ item.status }}{{ item.http_status ? ` (${item.http_status})` : '' }}
+                </UBadge>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-500">
+                Type: {{ item.content_type }} · Sources: {{ item.discovery_sources.join(', ') }}
+              </p>
+              <p
+                v-if="item.error_detail || item.failure_reason"
+                class="mt-1 text-[11px] text-rose-600 dark:text-rose-400"
+              >
+                {{ item.failure_reason }} — {{ item.error_detail }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

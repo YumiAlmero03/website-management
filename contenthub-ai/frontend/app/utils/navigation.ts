@@ -22,16 +22,6 @@ export const SIDEBAR_MODULES: readonly NavModuleItem[] = [
     description: 'Live system health, database status, active counts, and recent activity.',
   },
   {
-    id: 'brands',
-    label: 'Brands',
-    to: '/brands',
-    icon: 'Tags',
-    phase: 2,
-    implemented: true,
-    section: 'content',
-    description: 'Manage brand profiles, languages, tone, keywords, hashtags, and CTAs.',
-  },
-  {
     id: 'websites',
     label: 'Websites',
     to: '/websites',
@@ -39,7 +29,7 @@ export const SIDEBAR_MODULES: readonly NavModuleItem[] = [
     phase: 2,
     implemented: true,
     section: 'content',
-    description: 'Register monitored websites, discovery endpoints, and scan frequencies.',
+    description: 'Website-centric brand identity, discovery sources, classification rules, and scans.',
   },
   {
     id: 'content-library',
@@ -49,7 +39,7 @@ export const SIDEBAR_MODULES: readonly NavModuleItem[] = [
     phase: 2,
     implemented: true,
     section: 'content',
-    description: 'Browse extracted articles, clean Markdown, content hashes, and keywords.',
+    description: 'All discovered homepages, pages, blog posts, blog indexes, revisions, and errors.',
   },
   {
     id: 'social-media',
@@ -132,7 +122,7 @@ export const SIDEBAR_MODULES: readonly NavModuleItem[] = [
     plannedCapabilities: [
       'Official Google Gen AI SDK with dynamic model selection (free-tier Flash/Flash-Lite preferred)',
       'Daily request and token quota protection (never auto-switches to paid tiers)',
-      'MySQL AI response cache keyed by model, prompt version, brand rules, and content hash',
+      'MySQL AI response cache keyed by model, prompt version, website brand rules, and content hash',
     ],
   },
   {
@@ -158,7 +148,7 @@ export const SIDEBAR_MODULES: readonly NavModuleItem[] = [
     section: 'system',
     description: 'Measured publishing performance, Gemini token usage, and Search Console data.',
     plannedCapabilities: [
-      'Article discovery, generated drafts, publishing success/failure rates, and platform mix',
+      'Content discovery, generated drafts, publishing success/failure rates, and platform mix',
       'Measured Gemini request/token usage clearly separated from estimates and unavailable metrics',
       'Chart.js visualizations backed by real MySQL analytics records',
     ],
@@ -191,7 +181,7 @@ export const SIDEBAR_MODULES: readonly NavModuleItem[] = [
     phase: 1,
     implemented: true,
     section: 'system',
-    description: 'Manage timezone, publishing defaults, Resource Guardian thresholds, SEO, and backups.',
+    description: 'Manage timezone, website categories, publishing defaults, Resource Guardian, and SEO.',
   },
 ]
 

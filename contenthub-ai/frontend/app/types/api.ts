@@ -131,13 +131,22 @@ export interface Phase1Counts {
 }
 
 export interface Phase2Metrics {
-  total_brands: number
   active_websites: number
-  total_articles: number
-  articles_discovered_today: number
-  updated_articles: number
+  total_categories: number
+  total_contents: number
+  total_extracted: number
+  homepage_count: number
+  page_count: number
+  blog_post_count: number
+  blog_index_count: number
+  other_count: number
+  pending_extractions: number
+  failed_extractions: number
+  contents_discovered_today: number
+  updated_contents: number
   completed_scans: number
   failed_scans: number
+  incomplete_scans: number
   websites_due_for_scan: number
 }
 
@@ -146,15 +155,36 @@ export interface ScanLog {
   website_id: number
   website_name: string | null
   scan_method: string
+  scan_mode: 'full' | 'incremental' | 'resume' | 'retry_failed' | 'discover_only' | string
   trigger_type: string
   urls_found: number
   articles_processed: number
+  urls_pending_extraction: number
   new_articles: number
   updated_articles: number
   unchanged_articles: number
   skipped_articles: number
   failed_articles: number
-  status: 'pending' | 'processing' | 'completed' | 'partially_completed' | 'failed' | 'cancelled' | string
+  excluded_count: number
+  homepage_count: number
+  page_count: number
+  blog_post_count: number
+  other_count: number
+  current_source: string | null
+  current_url: string | null
+  discovered_sitemaps: string[]
+  sources_completed: Array<Record<string, unknown>>
+  sources_failed: Array<Record<string, unknown>>
+  status:
+    | 'pending'
+    | 'processing'
+    | 'completed'
+    | 'partially_completed'
+    | 'incomplete'
+    | 'paused'
+    | 'failed'
+    | 'cancelled'
+    | string
   error_message: string | null
   duration_ms: number | null
   started_at: string | null
@@ -167,12 +197,35 @@ export interface ScanLogListResponse {
   meta: PaginationMeta
 }
 
+export interface ScanItem {
+  id: number
+  scan_log_id: number
+  website_id: number
+  content_id: number | null
+  url: string
+  normalized_url: string
+  content_type: string
+  discovery_sources: string[]
+  discovered_title: string | null
+  status: string
+  http_status: number | null
+  failure_reason: string | null
+  error_detail: string | null
+  processed_at: string | null
+  created_at: string
+}
+
+export interface ScanItemListResponse {
+  items: ScanItem[]
+  meta: PaginationMeta
+}
+
 export interface DashboardSummary {
   generated_at: string
   timezone: string
   current_phase: number
-  filtered_brand_id: number | null
   filtered_website_id: number | null
+  filtered_category_id: number | null
   database: DatabaseHealth
   resources: SystemResources
   phase1_counts: Phase1Counts
@@ -200,22 +253,49 @@ export interface SettingsListResponse {
   items: SettingItem[]
 }
 
-// Phase 2 — Brands, Websites, Articles & Media
-export interface BrandWebsiteSummary {
-  id: number
-  name: string
-  domain: string
-  website_type: string
-  status: string
-  last_successful_scan_at: string | null
-}
-
-export interface Brand {
+// Phase 2.1 — Website Categories, Website-Centric Brand Profiles, Discovery Sources, URL Rules & Contents
+export interface WebsiteCategory {
   id: number
   name: string
   slug: string
-  logo_url: string | null
   description: string | null
+  is_archived: boolean
+  sort_order: number
+  website_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface WebsiteCategoryListResponse {
+  items: WebsiteCategory[]
+}
+
+export interface ContentBreakdownCounts {
+  total_discovered: number
+  total_extracted: number
+  homepage: number
+  page: number
+  blog_index: number
+  blog_post: number
+  category: number
+  tag: number
+  archive: number
+  custom: number
+  pending: number
+  failed: number
+  updated: number
+  excluded: number
+}
+
+export interface Website {
+  id: number
+  category_id: number | null
+  category_name: string | null
+  name: string
+  brand_name: string
+  brand_slug: string | null
+  logo_url: string | null
+  brand_description: string | null
   target_audience: string | null
   target_country: string | null
   primary_language: string
@@ -227,29 +307,10 @@ export interface Brand {
   default_cta: string | null
   writing_guidelines: string | null
   ai_instructions: string | null
-  is_active: boolean
-  website_count: number
-  created_at: string
-  updated_at: string
-}
-
-export interface BrandDetail extends Brand {
-  websites: BrandWebsiteSummary[]
-}
-
-export interface BrandListResponse {
-  items: Brand[]
-  meta: PaginationMeta
-}
-
-export interface Website {
-  id: number
-  brand_id: number
-  brand_name: string | null
-  name: string
   domain: string
   website_type: string
   discovery_method: string
+  single_source_only: boolean
   rss_url: string | null
   sitemap_url: string | null
   llms_url: string | null
@@ -257,6 +318,8 @@ export interface Website {
   article_url_patterns: string[]
   excluded_url_patterns: string[]
   scan_interval_minutes: number
+  crawl_batch_size: number
+  crawl_max_urls_per_run: number
   auto_scan: boolean
   auto_generate: boolean
   initial_scan_completed: boolean
@@ -268,6 +331,7 @@ export interface Website {
   next_scan_at: string | null
   status: string
   article_count: number
+  content_counts: ContentBreakdownCounts
   created_at: string
   updated_at: string
 }
@@ -289,6 +353,7 @@ export interface WebsiteConnectivity {
 export interface WebsiteDiscoverResult {
   reachable: boolean
   homepage_url: string
+  detected_website_type: string | null
   rss_urls: string[]
   sitemap_urls: string[]
   llms_urls: string[]
@@ -297,9 +362,40 @@ export interface WebsiteDiscoverResult {
   notes: string[]
 }
 
+export interface WebsiteDiscoverySource {
+  id: number
+  website_id: number
+  parent_source_id: number | null
+  source_type: string
+  endpoint_url: string
+  is_enabled: boolean
+  etag: string | null
+  last_modified_header: string | null
+  last_status_code: number | null
+  last_urls_found: number
+  last_checked_at: string | null
+  last_success_at: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface WebsiteUrlRule {
+  id: number
+  website_id: number
+  pattern: string
+  target_content_type: 'blog_post' | 'blog_index' | 'page' | 'category' | 'tag' | 'archive' | 'custom' | 'exclude' | string
+  match_mode: 'prefix' | 'glob' | 'exact' | 'regex' | string
+  priority: number
+  is_enabled: boolean
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface MediaAsset {
   id: number
-  brand_id: number | null
+  website_id: number | null
   file_name: string
   file_path: string | null
   source_url: string | null
@@ -317,10 +413,11 @@ export interface MediaAssetListResponse {
   meta: PaginationMeta
 }
 
-export interface ArticleRevision {
+export interface ContentRevision {
   id: number
-  article_id: number
+  content_id: number
   revision_number: number
+  content_type: string | null
   title: string
   meta_description: string | null
   markdown_content: string | null
@@ -328,46 +425,86 @@ export interface ArticleRevision {
   created_at: string
 }
 
-export interface ArticleListItem {
+export interface ContentStats {
+  total_discovered: number
+  total_extracted: number
+  homepage_count: number
+  page_count: number
+  blog_post_count: number
+  blog_index_count: number
+  other_count: number
+  pending_count: number
+  failed_count: number
+  updated_count: number
+  excluded_count: number
+  discovered_today_count: number
+}
+
+export type ContentType =
+  | 'homepage'
+  | 'page'
+  | 'blog_index'
+  | 'blog_post'
+  | 'category'
+  | 'tag'
+  | 'archive'
+  | 'custom'
+  | string
+
+export interface ContentListItem {
   id: number
   website_id: number
   website_name: string | null
-  brand_id: number | null
-  brand_name: string | null
+  website_domain: string | null
+  website_category_name: string | null
   featured_media_id: number | null
   featured_image_url: string | null
-  title: string
+  content_type: ContentType
+  classification_method: string
+  manual_classification_override: boolean
+  is_excluded: boolean
+  url: string
   canonical_url: string
+  title: string
   author: string | null
   meta_description: string | null
+  h1_text: string | null
   language: string | null
   categories: string[]
   tags: string[]
   keywords: string[]
+  discovery_sources: string[]
   word_count: number
+  http_status: number | null
+  extraction_status: 'pending' | 'extracted' | 'failed' | string
+  extraction_error: string | null
   status: string
   is_historical_baseline: boolean
   near_duplicate_of_id: number | null
   near_duplicate_score: number | null
   published_at: string | null
   source_updated_at: string | null
-  discovered_at: string
+  first_discovered_at: string
+  last_discovered_at: string
   last_checked_at: string
 }
 
-export interface ArticleDetail extends ArticleListItem {
+export interface ContentDetail extends ContentListItem {
   url_hash: string
   content_hash: string
   original_content: string | null
+  extracted_content: string | null
   markdown_content: string | null
   optimized_context: string | null
+  structured_data_json: Record<string, unknown> | null
   featured_media: MediaAsset | null
   revision_count: number
   created_at: string
   updated_at: string
 }
 
-export interface ArticleListResponse {
-  items: ArticleListItem[]
+export interface ContentListResponse {
+  items: ContentListItem[]
   meta: PaginationMeta
+  stats: ContentStats
 }

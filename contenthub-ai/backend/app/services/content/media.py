@@ -48,7 +48,6 @@ def validate_image_bytes(
             f"Image exceeds maximum file size ({len(data)} > {max_file_bytes} bytes)."
         )
 
-    # Guard against Pillow decompression bombs.
     Image.MAX_IMAGE_PIXELS = max_dimension_px * max_dimension_px
 
     try:
@@ -91,7 +90,7 @@ def sanitize_filename(raw_name: str, *, fallback_ext: str = "jpg") -> str:
 
 
 class MediaAssetProcessor:
-    """SSRF-safe featured media handler supporting url_only and local validated storage."""
+    """SSRF-safe featured media handler owned by websites (supporting url_only and local)."""
 
     def __init__(
         self,
@@ -108,7 +107,7 @@ class MediaAssetProcessor:
         self,
         *,
         source_url: str,
-        brand_id: int | None,
+        website_id: int | None,
         alt_text: str | None = None,
         storage_mode: str | None = None,
     ) -> MediaAsset | None:
@@ -116,14 +115,13 @@ class MediaAssetProcessor:
         if not clean_url:
             return None
 
-        # Always run SSRF check on every image URL even in url_only mode.
         validate_outbound_url(
             clean_url,
             trusted_internal_hosts=self.settings.trusted_internal_host_set,
             resolver=self.fetcher.resolver,
         )
 
-        existing_by_url = self.media_repo.get_by_source_url(clean_url, brand_id=brand_id)
+        existing_by_url = self.media_repo.get_by_source_url(clean_url, website_id=website_id)
         mode = (storage_mode or self.settings.media_storage_mode).strip().lower()
 
         if mode == "url_only":
@@ -133,7 +131,7 @@ class MediaAssetProcessor:
             file_name = sanitize_filename(Path(parsed.path).name or "featured-image.jpg")
             url_checksum = hashlib.sha256(clean_url.encode("utf-8")).hexdigest()
             return self.media_repo.create(
-                brand_id=brand_id,
+                website_id=website_id,
                 file_name=file_name,
                 file_path=None,
                 source_url=clean_url[:1000],
@@ -145,7 +143,6 @@ class MediaAssetProcessor:
                 checksum=url_checksum,
             )
 
-        # Local validated download & cache mode
         try:
             response = self.fetcher.fetch(
                 clean_url,
@@ -183,7 +180,7 @@ class MediaAssetProcessor:
         relative_path = f"images/{safe_name}"
 
         return self.media_repo.create(
-            brand_id=brand_id,
+            website_id=website_id,
             file_name=safe_name,
             file_path=relative_path,
             source_url=clean_url[:1000],

@@ -16,14 +16,14 @@ from app.core.exceptions import AppError
 from app.core.rate_limit import SlidingWindowRateLimiter
 from app.database import check_database_connection, get_session_factory
 from app.repositories.activity_log_repo import SQLAlchemyActivityLogRepository
-from app.repositories.article_repo import SQLAlchemyArticleRepository
-from app.repositories.brand_repo import SQLAlchemyBrandRepository
+from app.repositories.content_repo import SQLAlchemyContentRepository
 from app.repositories.media_repo import SQLAlchemyMediaRepository
 from app.repositories.scan_log_repo import SQLAlchemyScanLogRepository
 from app.repositories.session_repo import SQLAlchemySessionRepository
 from app.repositories.settings_repo import SQLAlchemySettingsRepository
 from app.repositories.user_repo import SQLAlchemyUserRepository
 from app.repositories.website_repo import SQLAlchemyWebsiteRepository
+from app.repositories.website_source_repo import SQLAlchemyWebsiteSourceConfigRepository
 from app.services.auth_service import AuthService
 from app.services.monitoring.health_service import HealthService
 from app.services.scan_executor import ScanExecutorService
@@ -37,8 +37,8 @@ def _build_scan_executor(db: Session, settings: Settings) -> ScanExecutorService
     return ScanExecutorService(
         settings=settings,
         website_repo=SQLAlchemyWebsiteRepository(db),
-        brand_repo=SQLAlchemyBrandRepository(db),
-        article_repo=SQLAlchemyArticleRepository(db),
+        source_config_repo=SQLAlchemyWebsiteSourceConfigRepository(db),
+        content_repo=SQLAlchemyContentRepository(db),
         scan_log_repo=SQLAlchemyScanLogRepository(db),
         media_repo=SQLAlchemyMediaRepository(db),
         activity_repo=activity_repo,
@@ -169,7 +169,7 @@ def run_single_scan(
             f"Scan #{result.id}: status={result.status}, new={result.new_articles}, "
             f"updated={result.updated_articles}, failed={result.failed_articles}"
         )
-        return 0 if result.status in {"completed", "partially_completed"} else 1
+        return 0 if result.status in {"completed", "partially_completed", "incomplete"} else 1
 
     settings = get_settings()
     db = get_session_factory()()
@@ -181,7 +181,7 @@ def run_single_scan(
             f"updated={result.updated_articles}, unchanged={result.unchanged_articles}, "
             f"failed={result.failed_articles}"
         )
-        return 0 if result.status in {"completed", "partially_completed"} else 1
+        return 0 if result.status in {"completed", "partially_completed", "incomplete"} else 1
     except (AppError, SQLAlchemyError) as exc:
         print(f"Scan execution error: {exc}", file=sys.stderr)
         return 1

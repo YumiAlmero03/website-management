@@ -48,13 +48,13 @@ def test_authenticated_health_and_dashboard_return_real_phase2_metrics(
     dash = dash_resp.json()
     assert dash["current_phase"] == 2
     assert dash["phase1_counts"]["active_sessions"] == 1
-    assert dash["phase2_metrics"]["total_brands"] == 0
+    assert dash["phase2_metrics"]["total_categories"] == 8
     assert dash["phase2_metrics"]["active_websites"] == 0
-    assert dash["phase2_metrics"]["total_articles"] == 0
+    assert dash["phase2_metrics"]["total_contents"] == 0
 
     active_modules = [m for m in dash["modules"] if m["status"] == "active"]
     future_modules = [m for m in dash["modules"] if m["status"] == "not_implemented"]
-    assert {m["key"] for m in active_modules} == {"brands", "websites", "content_library"}
+    assert {m["key"] for m in active_modules} == {"websites", "content_library"}
     assert {m["key"] for m in future_modules} == {
         "ai_management",
         "social_media",

@@ -58,7 +58,7 @@ class WordPressDiscoveryAdapter:
         etag: str | None = None,
         last_modified: str | None = None,
     ) -> DiscoveryResult:
-        per_page = min(20, max(1, max_urls))
+        per_page = min(100, max(1, max_urls))
         candidates: list[DiscoveredCandidate] = []
         seen: set[str] = set()
         page = 1
@@ -67,7 +67,7 @@ class WordPressDiscoveryAdapter:
         latest_modified = last_modified
         base_origin = f"https://{domain}"
 
-        while len(candidates) < max_urls and page <= total_pages and page <= 10:
+        while len(candidates) < max_urls and page <= total_pages and page <= 200:
             page_url = _build_wp_page_url(endpoint_url, page, per_page)
             try:
                 response = self.fetcher.fetch(

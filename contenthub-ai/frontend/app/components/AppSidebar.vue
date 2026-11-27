@@ -55,7 +55,7 @@ function handleNavClick() {
             ContentHub AI
           </p>
           <p class="truncate text-[11px] text-slate-500 dark:text-slate-400">
-            Phase 2 Website Monitor
+            Phase 2.1 Website Hub
           </p>
         </div>
       </NuxtLink>
@@ -86,7 +86,7 @@ function handleNavClick() {
       </button>
     </div>
 
-    <!-- Navigation links (all 16 required modules) -->
+    <!-- Navigation links (14 modules) -->
     <nav class="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
       <NuxtLink
         v-for="item in SIDEBAR_MODULES"

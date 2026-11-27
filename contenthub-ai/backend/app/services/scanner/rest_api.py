@@ -53,7 +53,7 @@ class RestApiDiscoveryAdapter:
         latest_etag = etag
         latest_modified = last_modified
 
-        while next_url and len(candidates) < max_urls and page_count < 10:
+        while next_url and len(candidates) < max_urls and page_count < 100:
             page_count += 1
             try:
                 response = self.fetcher.fetch(

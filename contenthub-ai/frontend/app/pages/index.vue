@@ -8,6 +8,7 @@ const uiStore = useUiStore()
 const toast = useToast()
 
 const summary = ref<DashboardSummary | null>(null)
+const selectedCategoryId = ref<string>('all')
 const loading = ref(true)
 const refreshing = ref(false)
 const errorMessage = ref<string | null>(null)
@@ -27,8 +28,8 @@ async function loadDashboard(showToast = false) {
 
   try {
     const query: Record<string, number> = {}
-    if (uiStore.selectedBrandId !== null) {
-      query.brand_id = uiStore.selectedBrandId
+    if (selectedCategoryId.value !== 'all') {
+      query.category_id = Number(selectedCategoryId.value)
     }
     if (uiStore.selectedWebsiteId !== null) {
       query.website_id = uiStore.selectedWebsiteId
@@ -52,7 +53,7 @@ async function loadDashboard(showToast = false) {
 }
 
 watch(
-  () => [uiStore.selectedBrandId, uiStore.selectedWebsiteId],
+  () => [selectedCategoryId.value, uiStore.selectedWebsiteId],
   () => {
     void loadDashboard(false)
   },
@@ -119,20 +120,34 @@ onMounted(() => {
     </div>
 
     <template v-else-if="summary">
-      <!-- Real Phase 2 Website Monitoring Metrics -->
+      <!-- Real Phase 2.1 Website Monitoring Metrics -->
       <section aria-label="Website monitoring statistics">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
             Website Monitoring & Content Library
           </h2>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <select
+              v-model="selectedCategoryId"
+              aria-label="Filter dashboard by website category"
+              class="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 focus:border-teal-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            >
+              <option value="all">All Categories</option>
+              <option
+                v-for="cat in uiStore.categoriesCatalog"
+                :key="cat.id"
+                :value="String(cat.id)"
+              >
+                {{ cat.name }}
+              </option>
+            </select>
             <UButton
-              to="/brands"
+              to="/content-library"
               color="neutral"
               variant="outline"
               size="xs"
             >
-              Manage Brands
+              Content Library
             </UButton>
             <UButton
               to="/websites"
@@ -146,29 +161,30 @@ onMounted(() => {
 
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
-            title="Total Brands"
-            :value="summary.phase2_metrics.total_brands"
-            subtitle="Configured brand profiles in MySQL"
-            icon="Tags"
-          />
-          <MetricCard
             title="Active Websites"
             :value="summary.phase2_metrics.active_websites"
-            :subtitle="`${summary.phase2_metrics.websites_due_for_scan} due for scheduled scan`"
+            :subtitle="`${summary.phase2_metrics.total_categories} categories · ${summary.phase2_metrics.websites_due_for_scan} due for scan`"
             icon="Globe"
           />
           <MetricCard
-            title="Discovered Articles"
-            :value="summary.phase2_metrics.total_articles"
-            :subtitle="`${summary.phase2_metrics.articles_discovered_today} discovered today · ${summary.phase2_metrics.updated_articles} updated`"
+            title="Discovered Content"
+            :value="summary.phase2_metrics.total_contents"
+            :subtitle="`${summary.phase2_metrics.homepage_count} home · ${summary.phase2_metrics.page_count} pages · ${summary.phase2_metrics.blog_post_count} posts`"
             icon="Library"
+          />
+          <MetricCard
+            title="Extractions & Issues"
+            :value="`${summary.phase2_metrics.total_extracted} / ${summary.phase2_metrics.failed_extractions}`"
+            :subtitle="`${summary.phase2_metrics.pending_extractions} pending · ${summary.phase2_metrics.updated_contents} updated`"
+            icon="Compass"
+            :status="summary.phase2_metrics.failed_extractions > 0 ? 'warning' : 'ok'"
           />
           <MetricCard
             title="Completed / Failed Scans"
             :value="`${summary.phase2_metrics.completed_scans} / ${summary.phase2_metrics.failed_scans}`"
-            subtitle="Historical MySQL website_scan_logs totals"
+            :subtitle="`${summary.phase2_metrics.incomplete_scans} incomplete / paused scan(s)`"
             icon="Activity"
-            :status="summary.phase2_metrics.failed_scans > 0 ? 'warning' : 'ok'"
+            :status="summary.phase2_metrics.failed_scans > 0 || summary.phase2_metrics.incomplete_scans > 0 ? 'warning' : 'ok'"
           />
         </div>
       </section>
@@ -240,7 +256,7 @@ onMounted(() => {
         >
           <AppEmptyState
             title="No website scans executed yet"
-            description="Register a brand and website, then trigger a manual scan to populate your Content Library."
+            description="Register a website, then trigger a scan to populate your Content Library."
           />
         </div>
 
@@ -274,7 +290,7 @@ onMounted(() => {
                     {{ scan.website_name || `Website #${scan.website_id}` }}
                   </NuxtLink>
                 </td>
-                <td class="px-4 py-2.5 font-mono text-[11px]">{{ scan.scan_method }}</td>
+                <td class="px-4 py-2.5 font-mono text-[11px]">{{ scan.scan_method }} · {{ scan.scan_mode }}</td>
                 <td class="px-4 py-2.5">{{ scan.trigger_type }}</td>
                 <td class="px-4 py-2.5">
                   <HealthStatusBadge :status="scan.status === 'completed' ? 'ok' : scan.status === 'partially_completed' ? 'warning' : scan.status" :label="scan.status" />
@@ -302,7 +318,7 @@ onMounted(() => {
               Recent Activity
             </h2>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Audit trail of authentication, brand, website, scanner, and settings events.
+              Audit trail of authentication, category, website, scanner, and settings events.
             </p>
           </div>
           <UButton

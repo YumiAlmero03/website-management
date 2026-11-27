@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 from app.config import Settings
 from app.models.base import ensure_utc, utc_now
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
-from app.repositories.article_repo import ArticleRepositoryProtocol
-from app.repositories.brand_repo import BrandRepositoryProtocol
+from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
+from app.repositories.content_repo import ContentRepositoryProtocol
 from app.repositories.scan_log_repo import ScanLogRepositoryProtocol
 from app.repositories.session_repo import SessionRepositoryProtocol
 from app.repositories.settings_repo import SettingsRepositoryProtocol
@@ -25,20 +25,15 @@ from app.services.settings_service import SettingsService
 
 ROADMAP_MODULES: tuple[PhaseModuleStatus, ...] = (
     PhaseModuleStatus(
-        key="brands",
-        label="Brands",
-        route="/brands",
-        phase=2,
-        status="active",
-        summary="Multi-brand language, tone, keyword, hashtag, and CTA profiles.",
-    ),
-    PhaseModuleStatus(
         key="websites",
         label="Websites & Scanner",
         route="/websites",
         phase=2,
         status="active",
-        summary="SSRF-safe discovery via REST, WordPress, RSS, Sitemap, llms.txt, and HTML.",
+        summary=(
+            "Website-centric brand profiles, multi-source discovery, "
+            "deterministic URL classification, and resumable batched scanning."
+        ),
     ),
     PhaseModuleStatus(
         key="content_library",
@@ -46,7 +41,10 @@ ROADMAP_MODULES: tuple[PhaseModuleStatus, ...] = (
         route="/content-library",
         phase=2,
         status="active",
-        summary="Extracted Markdown articles, optimized context, hashes, and revisions.",
+        summary=(
+            "Universal content repository covering homepages, pages, blog posts, "
+            "blog indexes, revisions, and extraction failure diagnostics."
+        ),
     ),
     PhaseModuleStatus(
         key="ai_management",
@@ -116,6 +114,8 @@ ROADMAP_MODULES: tuple[PhaseModuleStatus, ...] = (
 
 
 class DashboardService:
+    """Aggregates system health, website inventory, content breakdowns, and recent scans."""
+
     def __init__(
         self,
         *,
@@ -125,9 +125,9 @@ class DashboardService:
         session_repo: SessionRepositoryProtocol,
         settings_repo: SettingsRepositoryProtocol,
         activity_repo: ActivityLogRepositoryProtocol,
-        brand_repo: BrandRepositoryProtocol,
+        category_repo: WebsiteCategoryRepositoryProtocol,
         website_repo: WebsiteRepositoryProtocol,
-        article_repo: ArticleRepositoryProtocol,
+        content_repo: ContentRepositoryProtocol,
         scan_log_repo: ScanLogRepositoryProtocol,
     ) -> None:
         self.settings = settings
@@ -136,16 +136,16 @@ class DashboardService:
         self.session_repo = session_repo
         self.settings_repo = settings_repo
         self.activity_repo = activity_repo
-        self.brand_repo = brand_repo
+        self.category_repo = category_repo
         self.website_repo = website_repo
-        self.article_repo = article_repo
+        self.content_repo = content_repo
         self.scan_log_repo = scan_log_repo
 
     def get_summary(
         self,
         *,
-        brand_id: int | None = None,
         website_id: int | None = None,
+        category_id: int | None = None,
     ) -> DashboardSummaryResponse:
         now = utc_now()
         effective = self.settings_service.get_effective_map()
@@ -165,43 +165,38 @@ class DashboardService:
         configured_settings = self.settings_repo.count_all()
         recent_rows, total_activities = self.activity_repo.list_paginated(page=1, page_size=8)
 
-        total_brands = (
-            1
-            if brand_id is not None and self.brand_repo.get_by_id(brand_id) is not None
-            else (0 if brand_id is not None else self.brand_repo.count_all())
-        )
+        total_categories = self.category_repo.count_all(include_archived=False)
         active_websites = self.website_repo.count_all(
-            brand_id=brand_id,
             website_id=website_id,
+            category_id=category_id,
             status="active",
         )
-        total_articles = self.article_repo.count_all(brand_id=brand_id, website_id=website_id)
-        articles_today = self.article_repo.count_all(
-            brand_id=brand_id,
+        content_stats = self.content_repo.get_stats(
             website_id=website_id,
+            category_id=category_id,
             discovered_since=utc_day_start,
         )
-        updated_articles = self.article_repo.count_all(
-            brand_id=brand_id,
-            website_id=website_id,
-            status="updated",
-        )
         completed_scans = self.scan_log_repo.count_by_status(
-            "completed", brand_id=brand_id, website_id=website_id
+            "completed", website_id=website_id, category_id=category_id
         ) + self.scan_log_repo.count_by_status(
-            "partially_completed", brand_id=brand_id, website_id=website_id
+            "partially_completed", website_id=website_id, category_id=category_id
         )
         failed_scans = self.scan_log_repo.count_by_status(
-            "failed", brand_id=brand_id, website_id=website_id
+            "failed", website_id=website_id, category_id=category_id
+        )
+        incomplete_scans = self.scan_log_repo.count_by_status(
+            "incomplete", website_id=website_id, category_id=category_id
+        ) + self.scan_log_repo.count_by_status(
+            "paused", website_id=website_id, category_id=category_id
         )
         websites_due = self.website_repo.count_due(
-            now=now, brand_id=brand_id, website_id=website_id
+            now=now, website_id=website_id, category_id=category_id
         )
 
         recent_scan_rows = self.scan_log_repo.list_recent(
             limit=6,
-            brand_id=brand_id,
             website_id=website_id,
+            category_id=category_id,
         )
         recent_scans = []
         for scan in recent_scan_rows:
@@ -212,14 +207,26 @@ class DashboardService:
                     website_id=scan.website_id,
                     website_name=site.name if site else None,
                     scan_method=scan.scan_method,
+                    scan_mode=scan.scan_mode,
                     trigger_type=scan.trigger_type,
                     urls_found=scan.urls_found,
                     articles_processed=scan.articles_processed,
+                    urls_pending_extraction=scan.urls_pending_extraction,
                     new_articles=scan.new_articles,
                     updated_articles=scan.updated_articles,
                     unchanged_articles=scan.unchanged_articles,
                     skipped_articles=scan.skipped_articles,
                     failed_articles=scan.failed_articles,
+                    excluded_count=scan.excluded_count,
+                    homepage_count=scan.homepage_count,
+                    page_count=scan.page_count,
+                    blog_post_count=scan.blog_post_count,
+                    other_count=scan.other_count,
+                    current_source=scan.current_source,
+                    current_url=scan.current_url,
+                    discovered_sitemaps=list(scan.discovered_sitemaps_json or []),
+                    sources_completed=list(scan.sources_completed_json or []),
+                    sources_failed=list(scan.sources_failed_json or []),
                     status=scan.status,
                     error_message=scan.error_message,
                     duration_ms=scan.duration_ms,
@@ -249,8 +256,8 @@ class DashboardService:
             generated_at=now,
             timezone=tz_name,
             current_phase=2,
-            filtered_brand_id=brand_id,
             filtered_website_id=website_id,
+            filtered_category_id=category_id,
             database=db_health,
             resources=resources,
             phase1_counts=Phase1Counts(
@@ -259,13 +266,22 @@ class DashboardService:
                 activity_events_total=total_activities,
             ),
             phase2_metrics=Phase2Metrics(
-                total_brands=total_brands,
                 active_websites=active_websites,
-                total_articles=total_articles,
-                articles_discovered_today=articles_today,
-                updated_articles=updated_articles,
+                total_categories=total_categories,
+                total_contents=content_stats["total_discovered"],
+                total_extracted=content_stats["total_extracted"],
+                homepage_count=content_stats["homepage_count"],
+                page_count=content_stats["page_count"],
+                blog_post_count=content_stats["blog_post_count"],
+                blog_index_count=content_stats["blog_index_count"],
+                other_count=content_stats["other_count"],
+                pending_extractions=content_stats["pending_count"],
+                failed_extractions=content_stats["failed_count"],
+                contents_discovered_today=content_stats["discovered_today_count"],
+                updated_contents=content_stats["updated_count"],
                 completed_scans=completed_scans,
                 failed_scans=failed_scans,
+                incomplete_scans=incomplete_scans,
                 websites_due_for_scan=websites_due,
             ),
             recent_scans=recent_scans,

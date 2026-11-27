@@ -1,5 +1,5 @@
 from app.services.content.duplicate import compute_content_hash, find_near_duplicate
-from app.services.content.extractor import ContentExtractionEngine, ExtractedArticle
+from app.services.content.extractor import ContentExtractionEngine, ExtractedContent
 from app.services.content.keywords import extract_keywords
 from app.services.content.markdown import (
     count_words,
@@ -18,7 +18,7 @@ from app.services.content.revisions import create_revision_snapshot, has_content
 
 __all__ = [
     "ContentExtractionEngine",
-    "ExtractedArticle",
+    "ExtractedContent",
     "ExtractedMetadata",
     "MediaAssetProcessor",
     "MediaValidationError",

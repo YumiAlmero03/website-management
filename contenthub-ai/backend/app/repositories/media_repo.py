@@ -15,7 +15,7 @@ class MediaRepositoryProtocol(Protocol):
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        website_id: int | None = None,
     ) -> tuple[list[MediaAsset], int]: ...
 
     def get_by_id(self, media_id: int) -> MediaAsset | None: ...
@@ -23,13 +23,13 @@ class MediaRepositoryProtocol(Protocol):
     def get_by_checksum(self, checksum: str) -> MediaAsset | None: ...
 
     def get_by_source_url(
-        self, source_url: str, *, brand_id: int | None = None
+        self, source_url: str, *, website_id: int | None = None
     ) -> MediaAsset | None: ...
 
     def create(
         self,
         *,
-        brand_id: int | None,
+        website_id: int | None,
         file_name: str,
         file_path: str | None,
         source_url: str | None,
@@ -51,13 +51,13 @@ class SQLAlchemyMediaRepository:
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        website_id: int | None = None,
     ) -> tuple[list[MediaAsset], int]:
         count_stmt = select(func.count()).select_from(MediaAsset)
         data_stmt = select(MediaAsset).order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
-        if brand_id is not None:
-            count_stmt = count_stmt.where(MediaAsset.brand_id == brand_id)
-            data_stmt = data_stmt.where(MediaAsset.brand_id == brand_id)
+        if website_id is not None:
+            count_stmt = count_stmt.where(MediaAsset.website_id == website_id)
+            data_stmt = data_stmt.where(MediaAsset.website_id == website_id)
         total = int(self.db.execute(count_stmt).scalar_one())
         rows = list(
             self.db.execute(data_stmt.offset((page - 1) * page_size).limit(page_size))
@@ -74,17 +74,17 @@ class SQLAlchemyMediaRepository:
         return self.db.execute(stmt).scalar_one_or_none()
 
     def get_by_source_url(
-        self, source_url: str, *, brand_id: int | None = None
+        self, source_url: str, *, website_id: int | None = None
     ) -> MediaAsset | None:
         stmt = select(MediaAsset).where(MediaAsset.source_url == source_url)
-        if brand_id is not None:
-            stmt = stmt.where(MediaAsset.brand_id == brand_id)
+        if website_id is not None:
+            stmt = stmt.where(MediaAsset.website_id == website_id)
         return self.db.execute(stmt.limit(1)).scalar_one_or_none()
 
     def create(
         self,
         *,
-        brand_id: int | None,
+        website_id: int | None,
         file_name: str,
         file_path: str | None,
         source_url: str | None,
@@ -96,7 +96,7 @@ class SQLAlchemyMediaRepository:
         checksum: str | None,
     ) -> MediaAsset:
         asset = MediaAsset(
-            brand_id=brand_id,
+            website_id=website_id,
             file_name=file_name,
             file_path=file_path,
             source_url=source_url,

@@ -92,6 +92,7 @@ def validate_outbound_url(
     *,
     trusted_internal_hosts: set[str] | frozenset[str] | None = None,
     resolver: DNSResolver | None = None,
+    resolve_dns: bool = True,
 ) -> ValidatedTarget:
     """Validate an outbound URL against SSRF, credential smuggling, port, and DNS policies."""
     raw = url.strip()
@@ -132,6 +133,8 @@ def validate_outbound_url(
 
     if ip_literal is not None:
         resolved = [str(ip_literal)]
+    elif not resolve_dns:
+        resolved = []
     else:
         resolve_fn = resolver or default_dns_resolver
         try:
@@ -139,7 +142,7 @@ def validate_outbound_url(
         except OSError as exc:
             raise SSRFBlockedError(f"DNS resolution failed for '{hostname}'.") from exc
 
-    if not resolved:
+    if resolve_dns and not resolved:
         raise SSRFBlockedError(f"No network addresses resolved for '{hostname}'.")
 
     if not is_trusted:

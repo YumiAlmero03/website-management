@@ -70,15 +70,18 @@ class Settings(BaseSettings):
     resource_max_concurrent_browsers: int = Field(default=1, ge=1, le=4)
     resource_recheck_interval_minutes: int = Field(default=5, ge=1, le=60)
 
-    # Phase 2 — Website Scanner, SSRF Security, Content & Media
-    scanner_user_agent: str = "ContentHubAI/0.2 (+self-hosted-website-monitor)"
+    # Phase 2 & 2.1 — Website Scanner, SSRF Security, Content & Media
+    scanner_user_agent: str = "ContentHubAI/0.2.1 (+self-hosted-website-monitor)"
     scanner_request_timeout_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
     scanner_crawl_delay_seconds: float = Field(default=0.5, ge=0.0, le=30.0)
-    scanner_max_urls_per_scan: int = Field(default=100, ge=1, le=1000)
+    scanner_max_urls_per_scan: int = Field(default=20_000, ge=1, le=50_000)
+    scanner_max_discovery_urls: int = Field(default=20_000, ge=1, le=50_000)
+    scanner_default_crawl_batch_size: int = Field(default=100, ge=10, le=1000)
+    scanner_default_crawl_max_urls_per_run: int = Field(default=1000, ge=10, le=20_000)
     scanner_max_response_bytes: int = Field(default=5_242_880, ge=65_536, le=26_214_400)
     scanner_max_redirects: int = Field(default=5, ge=0, le=10)
-    scanner_max_sitemap_depth: int = Field(default=3, ge=1, le=6)
-    scanner_max_sitemap_files: int = Field(default=25, ge=1, le=100)
+    scanner_max_sitemap_depth: int = Field(default=4, ge=1, le=6)
+    scanner_max_sitemap_files: int = Field(default=100, ge=1, le=500)
     scanner_max_decompressed_bytes: int = Field(default=20_971_520, ge=1_048_576, le=52_428_800)
     scanner_respect_robots_txt: bool = True
     scanner_enable_playwright: bool = False

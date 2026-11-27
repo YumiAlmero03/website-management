@@ -4,10 +4,32 @@ from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
+from defusedxml.common import DefusedXmlException
 
-from app.services.scanner.exceptions import ScannerError
+from app.services.scanner.exceptions import DiscoveryError, ResponseTooLargeError, ScannerError
 from app.services.scanner.robots import RobotsPolicyChecker
 from app.services.scanner.security import SafeHttpFetcher
+from app.services.scanner.sitemap import _local_tag, decode_sitemap_xml
+
+COMMON_SITEMAP_PATHS: tuple[str, ...] = (
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/sitemap-index.xml",
+    "/wp-sitemap.xml",
+    "/page-sitemap.xml",
+    "/post-sitemap.xml",
+    "/blog-sitemap.xml",
+    "/sitemap-blog.php",
+    "/sitemap-index.php",
+)
+
+COMMON_RSS_PATHS: tuple[str, ...] = (
+    "/feed/",
+    "/rss.xml",
+    "/atom.xml",
+    "/feed.xml",
+    "/blog/feed/",
+)
 
 
 @dataclass
@@ -24,16 +46,17 @@ class WebsiteConnectivityResult:
 class WebsiteSourcesDiscoveryResult:
     reachable: bool
     homepage_url: str
+    detected_website_type: str | None = None
     rss_urls: list[str] = field(default_factory=list)
     sitemap_urls: list[str] = field(default_factory=list)
     llms_urls: list[str] = field(default_factory=list)
     wordpress_api_url: str | None = None
-    recommended_method: str = "html"
+    recommended_method: str = "auto"
     notes: list[str] = field(default_factory=list)
 
 
 class WebsiteAutoDiscovery:
-    """Probes website connectivity and auto-discovers WordPress API, RSS, sitemaps, and llms.txt."""
+    """Probes website reachability and detects WP API, RSS, sitemaps, and llms.txt."""
 
     def __init__(
         self,
@@ -77,7 +100,7 @@ class WebsiteAutoDiscovery:
 
     def discover_sources(self, domain: str) -> WebsiteSourcesDiscoveryResult:
         origin = f"https://{domain}"
-        result = WebsiteSourcesDiscoveryResult(reachable=False, homepage_url=f"{origin}/")
+        result = WebsiteSourcesDiscoveryResult(homepage_url=f"{origin}/", reachable=False)
 
         try:
             home_resp = self.fetcher.fetch(
@@ -90,56 +113,54 @@ class WebsiteAutoDiscovery:
         result.reachable = 200 <= home_resp.status_code < 400
         if home_resp.status_code == 200:
             soup = BeautifulSoup(home_resp.text, "html.parser")
-            for link in soup.find_all("link", rel=lambda v: v and "alternate" in str(v).lower()):
+            result.detected_website_type = self._detect_cms(soup, home_resp.text, home_resp.headers)
+            for link in soup.find_all("link", rel=True):
+                rels = " ".join(str(r).lower() for r in (link.get("rel") or []))
                 link_type = str(link.get("type") or "").lower()
                 href = str(link.get("href") or "").strip()
                 if not href:
                     continue
-                if "rss+xml" in link_type or "atom+xml" in link_type:
+                if "alternate" in rels and ("rss+xml" in link_type or "atom+xml" in link_type):
                     full_feed = urljoin(home_resp.final_url, href)
                     if full_feed not in result.rss_urls:
                         result.rss_urls.append(full_feed)
+                elif "sitemap" in rels:
+                    full_sm = urljoin(home_resp.final_url, href)
+                    if full_sm not in result.sitemap_urls:
+                        result.sitemap_urls.append(full_sm)
 
         # Check WordPress public REST API endpoint.
         wp_url = f"{origin}/wp-json/wp/v2/posts?per_page=1"
         if self._probe_ok(wp_url, expected_substrings=("[", "link"), accept="application/json"):
             result.wordpress_api_url = f"{origin}/wp-json/wp/v2/posts"
 
-        # Check common RSS/Atom feed locations if homepage did not advertise any.
-        if not result.rss_urls:
-            for path in ("/feed/", "/rss.xml", "/atom.xml", "/feed.xml"):
-                probe = f"{origin}{path}"
-                if self._probe_ok(probe, expected_substrings=("<rss", "<feed", "<channel")):
-                    result.rss_urls.append(probe)
-                    break
+        # Check common RSS/Atom feed locations.
+        for path in COMMON_RSS_PATHS:
+            probe = f"{origin}{path}"
+            if probe not in result.rss_urls and self._probe_ok(
+                probe, expected_substrings=("<rss", "<feed", "<channel")
+            ):
+                result.rss_urls.append(probe)
 
-        # Check robots.txt Sitemap directives plus common sitemap locations.
+        # Check ALL robots.txt Sitemap directives.
         for sm in self.robots.get_sitemap_urls(origin):
             if sm not in result.sitemap_urls:
                 result.sitemap_urls.append(sm)
-        if not result.sitemap_urls:
-            for path in ("/sitemap.xml", "/sitemap_index.xml"):
-                probe = f"{origin}{path}"
-                if self._probe_ok(probe, expected_substrings=("<urlset", "<sitemapindex")):
-                    result.sitemap_urls.append(probe)
-                    break
+
+        # Probe standard, WordPress, and custom sitemaps without stopping at first match.
+        for path in COMMON_SITEMAP_PATHS:
+            probe = f"{origin}{path}"
+            if probe in result.sitemap_urls:
+                continue
+            if self._probe_sitemap_xml(probe):
+                result.sitemap_urls.append(probe)
 
         # Check /llms.txt supplemental discovery source.
         llms_probe = f"{origin}/llms.txt"
         if self._probe_ok(llms_probe, expected_substrings=("http", "#")):
             result.llms_urls.append(llms_probe)
 
-        if result.wordpress_api_url:
-            result.recommended_method = "wordpress"
-        elif result.rss_urls:
-            result.recommended_method = "rss"
-        elif result.sitemap_urls:
-            result.recommended_method = "sitemap"
-        elif result.llms_urls:
-            result.recommended_method = "llms_txt"
-        else:
-            result.recommended_method = "html"
-
+        result.recommended_method = "auto"
         return result
 
     def _probe_ok(
@@ -158,11 +179,33 @@ class WebsiteAutoDiscovery:
         snippet = resp.text[:4096].lower()
         return any(token.lower() in snippet for token in expected_substrings)
 
+    def _probe_sitemap_xml(self, url: str) -> bool:
+        """Detect valid sitemap XML from decoded payload (plain or gzipped)."""
+        try:
+            resp = self.fetcher.fetch(
+                url,
+                accept="application/xml, text/xml, application/gzip;q=0.9, */*;q=0.5",
+                max_retries=0,
+            )
+        except ScannerError:
+            return False
+        if resp.status_code != 200 or not resp.content:
+            return False
+        try:
+            root = decode_sitemap_xml(
+                resp.content,
+                sitemap_url=url,
+                content_type_header=resp.headers.get("content-type", ""),
+            )
+            return _local_tag(root.tag) in {"urlset", "sitemapindex"}
+        except (DefusedXmlException, ValueError, DiscoveryError, ResponseTooLargeError):
+            return False
+
     @staticmethod
     def _detect_cms(soup: BeautifulSoup, body: str, headers: dict[str, str]) -> str:
         generator = soup.find("meta", attrs={"name": "generator"})
         gen_val = str(generator.get("content") or "").lower() if generator else ""
-        lowered = body[:10000].lower()
+        lowered = body[:12000].lower()
         if "wordpress" in gen_val or "/wp-content/" in lowered or "/wp-json/" in lowered:
             return "wordpress"
         if "__nuxt" in lowered or "/_nuxt/" in lowered:

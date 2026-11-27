@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import timedelta
 from urllib.parse import urlparse
 
@@ -8,27 +9,43 @@ from app.config import Settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
 from app.models.base import ensure_utc, utc_now
 from app.models.website import Website
+from app.models.website_discovery_source import WebsiteDiscoverySource
+from app.models.website_url_rule import WebsiteUrlRule
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
-from app.repositories.article_repo import ArticleRepositoryProtocol
-from app.repositories.brand_repo import BrandRepositoryProtocol
+from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
+from app.repositories.content_repo import ContentRepositoryProtocol
+from app.repositories.media_repo import MediaRepositoryProtocol
 from app.repositories.website_repo import WebsiteRepositoryProtocol
+from app.repositories.website_source_repo import WebsiteSourceConfigRepositoryProtocol
 from app.schemas.common import PaginationMeta
 from app.schemas.website import (
     ALLOWED_BASELINE_MODES,
     ALLOWED_DISCOVERY_METHODS,
     ALLOWED_WEBSITE_STATUSES,
     ALLOWED_WEBSITE_TYPES,
+    ContentBreakdownCounts,
     WebsiteConnectivityResponse,
     WebsiteCreateRequest,
     WebsiteDiscoverResponse,
+    WebsiteDiscoverySourceResponse,
+    WebsiteDiscoverySourceUpdateRequest,
     WebsiteListResponse,
     WebsiteResponse,
     WebsiteUpdateRequest,
+    WebsiteUrlRuleCreateRequest,
+    WebsiteUrlRuleResponse,
+    WebsiteUrlRuleUpdateRequest,
 )
+from app.services.category_service import slugify_label
+from app.services.content.media import MediaValidationError, validate_image_bytes
+from app.services.scanner.classifier import RULE_TARGET_TYPES
 from app.services.scanner.discovery import WebsiteAutoDiscovery
+from app.services.scanner.exceptions import ScannerError
 from app.services.scanner.robots import RobotsPolicyChecker
-from app.services.scanner.security import SafeHttpFetcher
+from app.services.scanner.security import SafeHttpFetcher, validate_outbound_url
 from app.services.scanner.url_normalizer import normalize_domain, validate_url_patterns
+
+ALLOWED_RULE_MATCH_MODES: tuple[str, ...] = ("prefix", "glob", "exact", "regex")
 
 
 def _validate_optional_http_url(url: str | None, *, field_name: str) -> str | None:
@@ -45,35 +62,97 @@ def _validate_optional_http_url(url: str | None, *, field_name: str) -> str | No
     return cleaned
 
 
+def _validate_logo_value(logo_url: str | None) -> str | None:
+    if logo_url is None:
+        return None
+    cleaned = logo_url.strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("/"):
+        return cleaned[:500]
+    return _validate_optional_http_url(cleaned, field_name="logo_url")
+
+
+def _clean_string_list(values: list[str] | None, *, max_len: int = 120) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        item = str(raw).strip()[:max_len]
+        key = item.lower()
+        if item and key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 class WebsiteService:
+    """Website-centric management service owning brand identity, sources, URL rules, and media."""
+
     def __init__(
         self,
         *,
         settings: Settings,
         website_repo: WebsiteRepositoryProtocol,
-        brand_repo: BrandRepositoryProtocol,
-        article_repo: ArticleRepositoryProtocol,
+        category_repo: WebsiteCategoryRepositoryProtocol,
+        source_config_repo: WebsiteSourceConfigRepositoryProtocol,
+        content_repo: ContentRepositoryProtocol,
+        media_repo: MediaRepositoryProtocol,
         activity_repo: ActivityLogRepositoryProtocol,
         fetcher: SafeHttpFetcher,
     ) -> None:
         self.settings = settings
         self.website_repo = website_repo
-        self.brand_repo = brand_repo
-        self.article_repo = article_repo
+        self.category_repo = category_repo
+        self.source_config_repo = source_config_repo
+        self.content_repo = content_repo
+        self.media_repo = media_repo
         self.activity_repo = activity_repo
         self.fetcher = fetcher
 
     def _to_response(self, site: Website) -> WebsiteResponse:
         now = utc_now()
-        brand = self.brand_repo.get_by_id(site.brand_id)
+        cat = self.category_repo.get_by_id(site.category_id) if site.category_id else None
+        raw_stats = self.content_repo.get_stats(website_id=site.id)
+        breakdown = ContentBreakdownCounts(
+            total_discovered=raw_stats["total_discovered"],
+            total_extracted=raw_stats["total_extracted"],
+            homepage=raw_stats["homepage_count"],
+            page=raw_stats["page_count"],
+            blog_index=raw_stats["blog_index_count"],
+            blog_post=raw_stats["blog_post_count"],
+            category=raw_stats.get("category_count", 0),
+            tag=raw_stats.get("tag_count", 0),
+            archive=raw_stats.get("archive_count", 0),
+            custom=raw_stats.get("custom_count", 0),
+            pending=raw_stats["pending_count"],
+            failed=raw_stats["failed_count"],
+            updated=raw_stats["updated_count"],
+            excluded=raw_stats["excluded_count"],
+        )
         return WebsiteResponse(
             id=site.id,
-            brand_id=site.brand_id,
-            brand_name=brand.name if brand else None,
+            category_id=site.category_id,
+            category_name=cat.name if cat else None,
             name=site.name,
+            brand_name=site.brand_name,
+            brand_slug=site.brand_slug,
+            logo_url=site.logo_url,
+            brand_description=site.brand_description,
+            target_audience=site.target_audience,
+            target_country=site.target_country,
+            primary_language=site.primary_language,
+            secondary_languages=list(site.secondary_languages or []),
+            tone=site.tone,
+            target_keywords=list(site.target_keywords or []),
+            restricted_keywords=list(site.restricted_keywords or []),
+            default_hashtags=list(site.default_hashtags or []),
+            default_cta=site.default_cta,
+            writing_guidelines=site.writing_guidelines,
+            ai_instructions=site.ai_instructions,
             domain=site.domain,
             website_type=site.website_type,
             discovery_method=site.discovery_method,
+            single_source_only=site.single_source_only,
             rss_url=site.rss_url,
             sitemap_url=site.sitemap_url,
             llms_url=site.llms_url,
@@ -81,6 +160,8 @@ class WebsiteService:
             article_url_patterns=list(site.article_url_patterns or []),
             excluded_url_patterns=list(site.excluded_url_patterns or []),
             scan_interval_minutes=site.scan_interval_minutes,
+            crawl_batch_size=site.crawl_batch_size,
+            crawl_max_urls_per_run=site.crawl_max_urls_per_run,
             auto_scan=site.auto_scan,
             auto_generate=site.auto_generate,
             initial_scan_completed=site.initial_scan_completed,
@@ -91,17 +172,81 @@ class WebsiteService:
             last_successful_scan_at=ensure_utc(site.last_successful_scan_at),
             next_scan_at=ensure_utc(site.next_scan_at),
             status=site.status,
-            article_count=self.article_repo.count_by_website(site.id),
+            article_count=raw_stats["total_discovered"],
+            content_counts=breakdown,
             created_at=ensure_utc(site.created_at) or now,
             updated_at=ensure_utc(site.updated_at) or now,
         )
+
+    @staticmethod
+    def _to_source_response(src: WebsiteDiscoverySource) -> WebsiteDiscoverySourceResponse:
+        now = utc_now()
+        return WebsiteDiscoverySourceResponse(
+            id=src.id,
+            website_id=src.website_id,
+            parent_source_id=src.parent_source_id,
+            source_type=src.source_type,
+            endpoint_url=src.endpoint_url,
+            is_enabled=src.is_enabled,
+            etag=src.etag,
+            last_modified_header=src.last_modified_header,
+            last_status_code=src.last_status_code,
+            last_urls_found=src.last_urls_found,
+            last_checked_at=ensure_utc(src.last_checked_at),
+            last_success_at=ensure_utc(src.last_success_at),
+            last_error=src.last_error,
+            created_at=ensure_utc(src.created_at) or now,
+            updated_at=ensure_utc(src.updated_at) or now,
+        )
+
+    @staticmethod
+    def _to_rule_response(rule: WebsiteUrlRule) -> WebsiteUrlRuleResponse:
+        now = utc_now()
+        return WebsiteUrlRuleResponse(
+            id=rule.id,
+            website_id=rule.website_id,
+            pattern=rule.pattern,
+            target_content_type=rule.target_content_type,
+            match_mode=rule.match_mode,
+            priority=rule.priority,
+            is_enabled=rule.is_enabled,
+            notes=rule.notes,
+            created_at=ensure_utc(rule.created_at) or now,
+            updated_at=ensure_utc(rule.updated_at) or now,
+        )
+
+    def _sync_configured_sources(self, site: Website) -> None:
+        origin = f"https://{site.domain}"
+        self.source_config_repo.upsert_source(
+            website_id=site.id,
+            source_type="homepage",
+            endpoint_url=f"{origin}/",
+            is_enabled=True,
+        )
+        mapping = [
+            ("rss", site.rss_url),
+            ("sitemap", site.sitemap_url),
+            ("llms_txt", site.llms_url),
+            (
+                "wordpress" if site.website_type == "wordpress" else "rest_api",
+                site.api_endpoint,
+            ),
+        ]
+        for source_type, url in mapping:
+            if url:
+                self.source_config_repo.upsert_source(
+                    website_id=site.id,
+                    source_type=source_type,
+                    endpoint_url=url,
+                    is_enabled=True,
+                )
 
     def list_websites(
         self,
         *,
         page: int,
         page_size: int,
-        brand_id: int | None = None,
+        category_id: int | None = None,
         status: str | None = None,
         website_type: str | None = None,
         search: str | None = None,
@@ -109,7 +254,7 @@ class WebsiteService:
         rows, total = self.website_repo.list_paginated(
             page=page,
             page_size=page_size,
-            brand_id=brand_id,
+            category_id=category_id,
             status=status,
             website_type=website_type,
             search=search,
@@ -138,14 +283,23 @@ class WebsiteService:
         user_id: int,
         ip_address: str | None,
     ) -> WebsiteResponse:
-        if self.brand_repo.get_by_id(payload.brand_id) is None:
-            raise NotFoundError(f"Brand #{payload.brand_id} not found.")
+        if (
+            payload.category_id is not None
+            and self.category_repo.get_by_id(payload.category_id) is None
+        ):
+            raise NotFoundError(f"Website category #{payload.category_id} not found.")
 
         try:
             domain = normalize_domain(payload.domain)
+            validate_outbound_url(
+                f"https://{domain}/",
+                trusted_internal_hosts=self.settings.trusted_internal_host_set,
+                resolver=self.fetcher.resolver,
+                resolve_dns=False,
+            )
             include_patterns = validate_url_patterns(payload.article_url_patterns)
             exclude_patterns = validate_url_patterns(payload.excluded_url_patterns)
-        except ValueError as exc:
+        except (ValueError, ScannerError) as exc:
             raise ValidationAppError(str(exc)) from exc
 
         self._validate_enums(
@@ -155,8 +309,12 @@ class WebsiteService:
             status=payload.status,
         )
 
-        if self.website_repo.get_by_brand_and_domain(payload.brand_id, domain) is not None:
-            raise ConflictError(f"Domain '{domain}' is already registered under this brand.")
+        if self.website_repo.get_by_domain(domain) is not None:
+            raise ConflictError(f"Domain '{domain}' is already registered.")
+
+        site_name = payload.name.strip()
+        brand_name = (payload.brand_name or site_name).strip()
+        brand_slug = slugify_label(brand_name) or slugify_label(domain)
 
         next_scan_at = (
             (utc_now() + timedelta(minutes=payload.scan_interval_minutes)).replace(tzinfo=None)
@@ -166,11 +324,37 @@ class WebsiteService:
 
         site = self.website_repo.create(
             {
-                "brand_id": payload.brand_id,
-                "name": payload.name.strip(),
+                "category_id": payload.category_id,
+                "name": site_name,
+                "brand_name": brand_name,
+                "brand_slug": brand_slug,
+                "logo_url": _validate_logo_value(payload.logo_url),
+                "brand_description": (
+                    payload.brand_description.strip() if payload.brand_description else None
+                ),
+                "target_audience": (
+                    payload.target_audience.strip() if payload.target_audience else None
+                ),
+                "target_country": (
+                    payload.target_country.strip() if payload.target_country else None
+                ),
+                "primary_language": payload.primary_language.strip()[:32] or "en",
+                "secondary_languages": _clean_string_list(payload.secondary_languages, max_len=32),
+                "tone": payload.tone.strip() if payload.tone else None,
+                "target_keywords": _clean_string_list(payload.target_keywords),
+                "restricted_keywords": _clean_string_list(payload.restricted_keywords),
+                "default_hashtags": _clean_string_list(payload.default_hashtags),
+                "default_cta": payload.default_cta.strip() if payload.default_cta else None,
+                "writing_guidelines": (
+                    payload.writing_guidelines.strip() if payload.writing_guidelines else None
+                ),
+                "ai_instructions": (
+                    payload.ai_instructions.strip() if payload.ai_instructions else None
+                ),
                 "domain": domain,
                 "website_type": payload.website_type,
                 "discovery_method": payload.discovery_method,
+                "single_source_only": payload.single_source_only,
                 "rss_url": _validate_optional_http_url(payload.rss_url, field_name="rss_url"),
                 "sitemap_url": _validate_optional_http_url(
                     payload.sitemap_url, field_name="sitemap_url"
@@ -182,6 +366,8 @@ class WebsiteService:
                 "article_url_patterns": include_patterns,
                 "excluded_url_patterns": exclude_patterns,
                 "scan_interval_minutes": payload.scan_interval_minutes,
+                "crawl_batch_size": payload.crawl_batch_size,
+                "crawl_max_urls_per_run": payload.crawl_max_urls_per_run,
                 "auto_scan": payload.auto_scan,
                 "auto_generate": payload.auto_generate,
                 "baseline_mode": payload.baseline_mode,
@@ -195,6 +381,7 @@ class WebsiteService:
                 "status": payload.status,
             }
         )
+        self._sync_configured_sources(site)
         self.activity_repo.create(
             user_id=user_id,
             actor_type="admin",
@@ -202,7 +389,12 @@ class WebsiteService:
             action="website.created",
             level="info",
             message=f"Registered website '{site.name}' ({site.domain}).",
-            metadata={"website_id": site.id, "brand_id": site.brand_id, "domain": site.domain},
+            metadata={
+                "website_id": site.id,
+                "category_id": site.category_id,
+                "brand_name": site.brand_name,
+                "domain": site.domain,
+            },
             ip_address=ip_address,
         )
         return self._to_response(site)
@@ -222,23 +414,29 @@ class WebsiteService:
         raw = payload.model_dump(exclude_unset=True)
         updates: dict[str, object] = {}
 
-        target_brand_id = int(raw.get("brand_id", existing.brand_id))
-        if "brand_id" in raw:
-            if self.brand_repo.get_by_id(target_brand_id) is None:
-                raise NotFoundError(f"Brand #{target_brand_id} not found.")
-            updates["brand_id"] = target_brand_id
+        if raw.get("clear_category"):
+            updates["category_id"] = None
+        elif "category_id" in raw:
+            cat_id = raw["category_id"]
+            if cat_id is not None and self.category_repo.get_by_id(int(cat_id)) is None:
+                raise NotFoundError(f"Website category #{cat_id} not found.")
+            updates["category_id"] = cat_id
 
-        target_domain = existing.domain
         if "domain" in raw and raw["domain"] is not None:
             try:
                 target_domain = normalize_domain(raw["domain"])
-            except ValueError as exc:
+                validate_outbound_url(
+                    f"https://{target_domain}/",
+                    trusted_internal_hosts=self.settings.trusted_internal_host_set,
+                    resolver=self.fetcher.resolver,
+                    resolve_dns=False,
+                )
+            except (ValueError, ScannerError) as exc:
                 raise ValidationAppError(str(exc)) from exc
+            conflict = self.website_repo.get_by_domain(target_domain)
+            if conflict is not None and conflict.id != website_id:
+                raise ConflictError(f"Domain '{target_domain}' is already registered.")
             updates["domain"] = target_domain
-
-        conflict = self.website_repo.get_by_brand_and_domain(target_brand_id, target_domain)
-        if conflict is not None and conflict.id != website_id:
-            raise ConflictError(f"Domain '{target_domain}' is already registered under this brand.")
 
         self._validate_enums(
             website_type=raw.get("website_type"),
@@ -249,11 +447,48 @@ class WebsiteService:
 
         if "name" in raw and raw["name"] is not None:
             updates["name"] = raw["name"].strip()
+        if "brand_name" in raw:
+            bname = (raw["brand_name"] or existing.name).strip()
+            updates["brand_name"] = bname
+            updates["brand_slug"] = slugify_label(bname)
+        if "logo_url" in raw:
+            updates["logo_url"] = _validate_logo_value(raw["logo_url"])
+
+        for text_field in (
+            "brand_description",
+            "target_audience",
+            "target_country",
+            "primary_language",
+            "tone",
+            "default_cta",
+            "writing_guidelines",
+            "ai_instructions",
+        ):
+            if text_field in raw:
+                val = raw[text_field]
+                if text_field == "primary_language" and val:
+                    updates[text_field] = str(val).strip()[:32]
+                else:
+                    updates[text_field] = (
+                        str(val).strip() if isinstance(val, str) and val.strip() else None
+                    )
+
+        for list_field in (
+            "secondary_languages",
+            "target_keywords",
+            "restricted_keywords",
+            "default_hashtags",
+        ):
+            if list_field in raw and raw[list_field] is not None:
+                max_len = 32 if list_field == "secondary_languages" else 120
+                updates[list_field] = _clean_string_list(raw[list_field], max_len=max_len)
+
         for url_field in ("rss_url", "sitemap_url", "llms_url", "api_endpoint"):
             if url_field in raw:
                 updates[url_field] = _validate_optional_http_url(
                     raw[url_field], field_name=url_field
                 )
+
         try:
             if "article_url_patterns" in raw:
                 updates["article_url_patterns"] = validate_url_patterns(raw["article_url_patterns"])
@@ -267,14 +502,17 @@ class WebsiteService:
         for simple_field in (
             "website_type",
             "discovery_method",
+            "single_source_only",
             "scan_interval_minutes",
+            "crawl_batch_size",
+            "crawl_max_urls_per_run",
             "auto_scan",
             "auto_generate",
             "baseline_mode",
             "baseline_limit",
             "status",
         ):
-            if simple_field in raw:
+            if simple_field in raw and raw[simple_field] is not None:
                 updates[simple_field] = raw[simple_field]
 
         if "baseline_after_date" in raw:
@@ -283,6 +521,8 @@ class WebsiteService:
 
         updated = self.website_repo.update(website_id, updates)
         assert updated is not None
+        self._sync_configured_sources(updated)
+
         self.activity_repo.create(
             user_id=user_id,
             actor_type="admin",
@@ -291,6 +531,71 @@ class WebsiteService:
             level="info",
             message=f"Updated website '{updated.name}' ({updated.domain}).",
             metadata={"website_id": updated.id, "updated_fields": sorted(updates.keys())},
+            ip_address=ip_address,
+        )
+        return self._to_response(updated)
+
+    def upload_logo(
+        self,
+        website_id: int,
+        *,
+        filename: str,
+        file_bytes: bytes,
+        content_type: str | None,
+        user_id: int,
+        ip_address: str | None,
+    ) -> WebsiteResponse:
+        site = self.website_repo.get_by_id(website_id)
+        if site is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+
+        try:
+            mime_type, width, height, checksum = validate_image_bytes(
+                file_bytes,
+                max_file_bytes=self.settings.media_max_file_bytes,
+                max_dimension_px=self.settings.media_max_dimension_px,
+                declared_mime=content_type,
+            )
+        except MediaValidationError as exc:
+            raise ValidationAppError(str(exc)) from exc
+
+        ext_map = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }
+        ext = ext_map[mime_type]
+        safe_name = f"logo_{website_id}_{checksum[:16]}.{ext}"
+        images_dir = self.settings.resolved_storage_root / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = (images_dir / safe_name).resolve()
+        if not str(dest_file).startswith(str(images_dir.resolve())):
+            raise ValidationAppError("Invalid resolved logo file path.")
+        dest_file.write_bytes(file_bytes)
+
+        asset = self.media_repo.create(
+            website_id=site.id,
+            file_name=safe_name,
+            file_path=f"images/{safe_name}",
+            source_url=None,
+            mime_type=mime_type,
+            file_size=len(file_bytes),
+            width=width,
+            height=height,
+            alt_text=f"{site.brand_name} logo",
+            checksum=checksum,
+        )
+        updated = self.website_repo.update(site.id, {"logo_url": f"/api/v1/media/{asset.id}/file"})
+        assert updated is not None
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.logo_uploaded",
+            level="info",
+            message=f"Uploaded brand logo for '{site.name}'.",
+            metadata={"website_id": site.id, "media_id": asset.id, "filename": filename[:120]},
             ip_address=ip_address,
         )
         return self._to_response(updated)
@@ -306,11 +611,11 @@ class WebsiteService:
         if site is None:
             raise NotFoundError(f"Website #{website_id} not found.")
 
-        article_count = self.article_repo.count_by_website(website_id)
-        if article_count > 0:
+        content_count = self.content_repo.count_by_website(website_id)
+        if content_count > 0:
             raise ConflictError(
-                f"Cannot delete website '{site.name}' because {article_count} "
-                "discovered article(s) are stored in the Content Library. "
+                f"Cannot delete website '{site.name}' because {content_count} "
+                "discovered content item(s) are stored in the Content Library. "
                 "Set status to 'paused' or 'archived' instead."
             )
 
@@ -367,6 +672,8 @@ class WebsiteService:
 
         if apply_detected:
             updates: dict[str, object] = {}
+            if result.detected_website_type and result.detected_website_type != site.website_type:
+                updates["website_type"] = result.detected_website_type
             if result.rss_urls and not site.rss_url:
                 updates["rss_url"] = result.rss_urls[0]
             if result.sitemap_urls and not site.sitemap_url:
@@ -377,20 +684,55 @@ class WebsiteService:
                 updates["api_endpoint"] = result.wordpress_api_url
             if updates:
                 self.website_repo.update(site.id, updates)
-                self.activity_repo.create(
-                    user_id=user_id,
-                    actor_type="admin",
-                    category="websites",
-                    action="website.sources_discovered",
-                    level="info",
-                    message=f"Auto-discovered sources for '{site.name}' ({site.domain}).",
-                    metadata={"website_id": site.id, "applied": sorted(updates.keys())},
-                    ip_address=ip_address,
+
+            for rss_url in result.rss_urls:
+                self.source_config_repo.upsert_source(
+                    website_id=site.id,
+                    source_type="rss",
+                    endpoint_url=rss_url,
+                    is_enabled=True,
                 )
+            for sitemap_url in result.sitemap_urls:
+                self.source_config_repo.upsert_source(
+                    website_id=site.id,
+                    source_type="sitemap",
+                    endpoint_url=sitemap_url,
+                    is_enabled=True,
+                )
+            for llms_url in result.llms_urls:
+                self.source_config_repo.upsert_source(
+                    website_id=site.id,
+                    source_type="llms_txt",
+                    endpoint_url=llms_url,
+                    is_enabled=True,
+                )
+            if result.wordpress_api_url:
+                self.source_config_repo.upsert_source(
+                    website_id=site.id,
+                    source_type="wordpress",
+                    endpoint_url=result.wordpress_api_url,
+                    is_enabled=True,
+                )
+            self.activity_repo.create(
+                user_id=user_id,
+                actor_type="admin",
+                category="websites",
+                action="website.sources_discovered",
+                level="info",
+                message=f"Auto-discovered sources for '{site.name}' ({site.domain}).",
+                metadata={
+                    "website_id": site.id,
+                    "applied": sorted(updates.keys()),
+                    "sitemaps_found": len(result.sitemap_urls),
+                    "rss_found": len(result.rss_urls),
+                },
+                ip_address=ip_address,
+            )
 
         return WebsiteDiscoverResponse(
             reachable=result.reachable,
             homepage_url=result.homepage_url,
+            detected_website_type=result.detected_website_type,
             rss_urls=result.rss_urls,
             sitemap_urls=result.sitemap_urls,
             llms_urls=result.llms_urls,
@@ -398,6 +740,185 @@ class WebsiteService:
             recommended_method=result.recommended_method,
             notes=result.notes,
         )
+
+    def list_sources(self, website_id: int) -> list[WebsiteDiscoverySourceResponse]:
+        site = self.website_repo.get_by_id(website_id)
+        if site is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+        rows = self.source_config_repo.list_sources(website_id)
+        return [self._to_source_response(row) for row in rows]
+
+    def update_source(
+        self,
+        website_id: int,
+        source_id: int,
+        payload: WebsiteDiscoverySourceUpdateRequest,
+        *,
+        user_id: int,
+        ip_address: str | None,
+    ) -> WebsiteDiscoverySourceResponse:
+        source = self.source_config_repo.get_source(source_id)
+        if source is None or source.website_id != website_id:
+            raise NotFoundError(
+                f"Discovery source #{source_id} not found for website #{website_id}."
+            )
+        updated = self.source_config_repo.update_source(
+            source_id, {"is_enabled": payload.is_enabled}
+        )
+        assert updated is not None
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.source_toggled",
+            level="info",
+            message=(
+                f"{'Enabled' if payload.is_enabled else 'Disabled'} {updated.source_type} "
+                f"source ({updated.endpoint_url})."
+            ),
+            metadata={"website_id": website_id, "source_id": source_id},
+            ip_address=ip_address,
+        )
+        return self._to_source_response(updated)
+
+    def list_rules(self, website_id: int) -> list[WebsiteUrlRuleResponse]:
+        if self.website_repo.get_by_id(website_id) is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+        return [self._to_rule_response(r) for r in self.source_config_repo.list_rules(website_id)]
+
+    def create_rule(
+        self,
+        website_id: int,
+        payload: WebsiteUrlRuleCreateRequest,
+        *,
+        user_id: int,
+        ip_address: str | None,
+    ) -> WebsiteUrlRuleResponse:
+        if self.website_repo.get_by_id(website_id) is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+        self._validate_rule_fields(
+            pattern=payload.pattern,
+            target_content_type=payload.target_content_type,
+            match_mode=payload.match_mode,
+        )
+        created = self.source_config_repo.create_rule(
+            {
+                "website_id": website_id,
+                "pattern": payload.pattern.strip(),
+                "target_content_type": payload.target_content_type.strip(),
+                "match_mode": payload.match_mode.strip(),
+                "priority": payload.priority,
+                "is_enabled": payload.is_enabled,
+                "notes": payload.notes.strip() if payload.notes else None,
+            }
+        )
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.rule_created",
+            level="info",
+            message=(
+                f"Added URL classification rule '{created.pattern}' -> "
+                f"'{created.target_content_type}'."
+            ),
+            metadata={"website_id": website_id, "rule_id": created.id},
+            ip_address=ip_address,
+        )
+        return self._to_rule_response(created)
+
+    def update_rule(
+        self,
+        website_id: int,
+        rule_id: int,
+        payload: WebsiteUrlRuleUpdateRequest,
+        *,
+        user_id: int,
+        ip_address: str | None,
+    ) -> WebsiteUrlRuleResponse:
+        existing = self.source_config_repo.get_rule(rule_id)
+        if existing is None or existing.website_id != website_id:
+            raise NotFoundError(f"URL rule #{rule_id} not found for website #{website_id}.")
+
+        raw = payload.model_dump(exclude_unset=True)
+        self._validate_rule_fields(
+            pattern=raw.get("pattern", existing.pattern),
+            target_content_type=raw.get("target_content_type", existing.target_content_type),
+            match_mode=raw.get("match_mode", existing.match_mode),
+        )
+        updates: dict[str, object] = {}
+        for key in (
+            "pattern",
+            "target_content_type",
+            "match_mode",
+            "priority",
+            "is_enabled",
+            "notes",
+        ):
+            if key in raw:
+                val = raw[key]
+                updates[key] = val.strip() if isinstance(val, str) else val
+        updated = self.source_config_repo.update_rule(rule_id, updates)
+        assert updated is not None
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.rule_updated",
+            level="info",
+            message=f"Updated URL classification rule #{rule_id}.",
+            metadata={"website_id": website_id, "rule_id": rule_id},
+            ip_address=ip_address,
+        )
+        return self._to_rule_response(updated)
+
+    def delete_rule(
+        self,
+        website_id: int,
+        rule_id: int,
+        *,
+        user_id: int,
+        ip_address: str | None,
+    ) -> None:
+        existing = self.source_config_repo.get_rule(rule_id)
+        if existing is None or existing.website_id != website_id:
+            raise NotFoundError(f"URL rule #{rule_id} not found for website #{website_id}.")
+        self.source_config_repo.delete_rule(rule_id)
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.rule_deleted",
+            level="warning",
+            message=f"Deleted URL classification rule '{existing.pattern}'.",
+            metadata={"website_id": website_id, "rule_id": rule_id},
+            ip_address=ip_address,
+        )
+
+    @staticmethod
+    def _validate_rule_fields(
+        *,
+        pattern: str | None,
+        target_content_type: str | None,
+        match_mode: str | None,
+    ) -> None:
+        if target_content_type not in RULE_TARGET_TYPES:
+            raise ValidationAppError(
+                f"Invalid target_content_type '{target_content_type}'. "
+                f"Allowed: {', '.join(RULE_TARGET_TYPES)}."
+            )
+        if match_mode not in ALLOWED_RULE_MATCH_MODES:
+            raise ValidationAppError(
+                f"Invalid match_mode '{match_mode}'. "
+                f"Allowed: {', '.join(ALLOWED_RULE_MATCH_MODES)}."
+            )
+        if not pattern or not pattern.strip():
+            raise ValidationAppError("URL rule pattern must not be empty.")
+        if match_mode == "regex":
+            try:
+                re.compile(pattern.strip())
+            except re.error as exc:
+                raise ValidationAppError(f"Invalid regular expression pattern: {exc}") from exc
 
     @staticmethod
     def _validate_enums(

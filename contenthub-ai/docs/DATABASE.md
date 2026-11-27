@@ -50,9 +50,9 @@ python -m app.cli check-db
 
 ---
 
-## 2. Implemented Schema Verification (Phases 1 & 2 vs Proposed Phases 3–6)
+## 2. Implemented Schema Verification (Phases 1 & 2.1 vs Proposed Phases 3–6)
 
-Every implemented Phase 1 & Phase 2 SQLAlchemy model in `backend/app/models/` was verified against Alembic revisions `20261126_0001` and `20261126_0002` — including live MySQL `8.0.45` `upgrade head -> downgrade 20261126_0001 -> upgrade head` and real SQLAlchemy repository CRUD tests on isolated `contenthub_ai_test`:
+Every implemented Phase 1 & Phase 2.1 SQLAlchemy model in `backend/app/models/` was verified against Alembic revisions `20261126_0001`, `20261126_0002`, and `20261127_0003` — including live MySQL `8.0.45` Phase 2->2.1 data preservation migration (`upgrade head -> downgrade 20261126_0002 -> upgrade head`) and real SQLAlchemy CRUD tests on isolated `contenthub_ai_test`:
 
 | Table | Status | ORM Model | Migration Revision | Drift Check |
 |---|---|---|---|---|
@@ -60,16 +60,19 @@ Every implemented Phase 1 & Phase 2 SQLAlchemy model in `backend/app/models/` wa
 | `sessions` | **Implemented (Phase 1)** | `app/models/session.py` (`AdminSession`) | `20261126_0001` | Exact match |
 | `application_settings` | **Implemented (Phase 1)** | `app/models/setting.py` (`ApplicationSetting`) | `20261126_0001` | Exact match |
 | `activity_logs` | **Implemented (Phase 1)** | `app/models/activity_log.py` (`ActivityLog`) | `20261126_0001` | Exact match |
-| `brands` | **Implemented (Phase 2)** | `app/models/brand.py` (`Brand`) | `20261126_0002` | Exact match (Live MySQL verified) |
-| `media_assets` | **Implemented (Phase 2)** | `app/models/media_asset.py` (`MediaAsset`) | `20261126_0002` | Exact match (Live MySQL verified) |
-| `websites` | **Implemented (Phase 2)** | `app/models/website.py` (`Website`) | `20261126_0002` | Exact match (Live MySQL verified) |
-| `source_articles` | **Implemented (Phase 2)** | `app/models/source_article.py` (`SourceArticle`) | `20261126_0002` | Exact match (Live MySQL + FULLTEXT verified) |
-| `source_article_revisions` | **Implemented (Phase 2)** | `app/models/source_article_revision.py` (`SourceArticleRevision`) | `20261126_0002` | Exact match (Live MySQL verified) |
-| `website_scan_logs` | **Implemented (Phase 2)** | `app/models/website_scan_log.py` (`WebsiteScanLog`) | `20261126_0002` | Exact match (Live MySQL verified) |
+| `website_categories` | **Implemented (Phase 2.1)** | `app/models/website_category.py` (`WebsiteCategory`) | `20261127_0003` | Exact match (Live MySQL verified) |
+| `websites` | **Implemented (Phase 2 / 2.1)** | `app/models/website.py` (`Website`) | `20261126_0002` + `20261127_0003` | Exact match (merged brand fields, Live MySQL verified) |
+| `website_discovery_sources` | **Implemented (Phase 2.1)** | `app/models/website_discovery_source.py` (`WebsiteDiscoverySource`) | `20261127_0003` | Exact match (Live MySQL verified) |
+| `website_url_rules` | **Implemented (Phase 2.1)** | `app/models/website_url_rule.py` (`WebsiteUrlRule`) | `20261127_0003` | Exact match (Live MySQL verified) |
+| `media_assets` | **Implemented (Phase 2 / 2.1)** | `app/models/media_asset.py` (`MediaAsset`) | `20261126_0002` + `20261127_0003` | Exact match (`website_id` ownership, Live MySQL verified) |
+| `website_contents` | **Implemented (Phase 2 / 2.1)** | `app/models/website_content.py` (`WebsiteContent`) | `20261126_0002` + `20261127_0003` | Exact match (renamed + FULLTEXT, Live MySQL verified) |
+| `content_revisions` | **Implemented (Phase 2 / 2.1)** | `app/models/content_revision.py` (`ContentRevision`) | `20261126_0002` + `20261127_0003` | Exact match (Live MySQL verified) |
+| `website_scan_logs` | **Implemented (Phase 2 / 2.1)** | `app/models/website_scan_log.py` (`WebsiteScanLog`) | `20261126_0002` + `20261127_0003` | Exact match (Live MySQL verified) |
+| `website_scan_items` | **Implemented (Phase 2.1)** | `app/models/website_scan_item.py` (`WebsiteScanItem`) | `20261127_0003` | Exact match (Live MySQL verified) |
 
-### Master 30-Table Architecture Inventory
+### Master Architecture Inventory (13 Implemented + 20 Proposed)
 
-Phases 1 and 2 (10 tables) are **Implemented**. Tables in Phases 3–6 (20 tables) remain **Proposed specifications only** and will be migrated incrementally by phase.
+Phases 1 and 2.1 (13 tables) are **Implemented**. Tables in Phases 3–6 (20 tables) remain **Proposed specifications only** and are website-centric (`websites.id` / `website_contents.id`), to be migrated incrementally by phase.
 
 | # | Table | Module | Phase | Status | Deletion Policy | Default Retention |
 |---|---|---|---|---|---|---|
@@ -77,12 +80,15 @@ Phases 1 and 2 (10 tables) are **Implemented**. Tables in Phases 3–6 (20 table
 | 2 | `sessions` | Auth & Settings | Phase 1 | **Implemented** | Revoke (`revoked_at`), prune expired | 30 days after expiry/revocation |
 | 3 | `application_settings` | Auth & Settings | Phase 1 | **Implemented** | Upsert / reset to default | Permanent |
 | 4 | `activity_logs` | Auth & Settings | Phase 1 | **Implemented** | Immutable append-only | 180 days (configurable) |
-| 5 | `brands` | Brand & Website | Phase 2 | **Implemented** | Archive (`is_active=0`); restrict delete if websites exist | Until manually purged |
-| 6 | `websites` | Brand & Website | Phase 2 | **Implemented** | Archive (`status=archived`); restrict delete if articles exist | Until manually purged |
-| 7 | `website_scan_logs` | Brand & Website | Phase 2 | **Implemented** | Append-only, cascade on website hard purge | 90 days |
-| 8 | `source_articles` | Content & Media | Phase 2 | **Implemented** | Archive (`status=archived`) | Until manually purged |
-| 9 | `source_article_revisions` | Content & Media | Phase 2 | **Implemented** | Cascade on article hard purge | Keep last 10 revisions or 180 days |
-| 10 | `media_assets` | Content & Media | Phase 2 | **Implemented** | Set null on brand/article delete; orphan sweep | 30 days after orphan |
+| 5 | `website_categories` | Websites & Categories | Phase 2.1 | **Implemented** | Archive (`is_archived=1`); block delete if in use | Until manually purged |
+| 6 | `websites` | Websites & Categories | Phase 2.1 | **Implemented** | Archive (`status=archived`); block delete if content exists | Until manually purged |
+| 7 | `website_discovery_sources` | Scanner & Sources | Phase 2.1 | **Implemented** | Cascade on website hard purge; toggle `is_enabled` | Permanent |
+| 8 | `website_url_rules` | Scanner & Rules | Phase 2.1 | **Implemented** | Cascade on website hard purge | Permanent |
+| 9 | `website_scan_logs` | Websites & Scanner | Phase 2.1 | **Implemented** | Append-only, cascade on website hard purge | 90 days |
+| 10 | `website_scan_items` | Websites & Scanner | Phase 2.1 | **Implemented** | Cascade on scan log purge | 90 days |
+| 11 | `website_contents` | Content & Media | Phase 2.1 | **Implemented** | Soft-exclude (`is_excluded=1`) or archive (`status=archived`) | Until manually purged |
+| 12 | `content_revisions` | Content & Media | Phase 2.1 | **Implemented** | Cascade on content hard purge | Keep last 10 revisions or 180 days |
+| 13 | `media_assets` | Content & Media | Phase 2.1 | **Implemented** | Set null on website/content delete; orphan sweep | 30 days after orphan |
 | 11 | `ai_providers` | Gemini AI & Cache | Phase 3 | Proposed | Deactivate (`is_active=0`) | Permanent |
 | 12 | `prompt_templates` | Gemini AI & Cache | Phase 3 | Proposed | Versioned deactivate (`is_active=0`) | Permanent for cache/audit replay |
 | 13 | `ai_response_cache` | Gemini AI & Cache | Phase 3 | Proposed | Hard delete on TTL expiry/invalidation | 30 days TTL (configurable) |
@@ -193,23 +199,41 @@ erDiagram
 
 ---
 
-### 3.2 Brand and Website Management *(Implemented — Phase 2, Migration `20261126_0002`)*
+### 3.2 Website Categories, Brand Profiles, Discovery Sources & Scans *(Implemented — Phase 2.1, Migration `20261127_0003`)*
 
 ```mermaid
 erDiagram
-    brands ||--o{ websites : "owns monitored sites"
-    websites ||--o{ website_scan_logs : "records scan runs"
+    website_categories |o--o{ websites : "categorizes website (nullable)"
+    websites ||--o{ website_discovery_sources : "tracks endpoints & ETags"
+    website_discovery_sources |o--o{ website_discovery_sources : "child sitemap tree"
+    websites ||--o{ website_url_rules : "custom classification rules"
+    websites ||--o{ website_scan_logs : "records batched scan runs"
+    website_scan_logs ||--o{ website_scan_items : "tracks per-URL outcome"
+    website_contents |o--o{ website_scan_items : "links extracted row"
 
-    brands {
+    website_categories {
         bigint id PK "AUTO_INCREMENT"
+        varchar name UK "VARCHAR(100) NOT NULL"
+        varchar slug UK "VARCHAR(120) NOT NULL"
+        varchar description "VARCHAR(255) NULL"
+        boolean is_archived "NOT NULL DEFAULT 0"
+        int sort_order "NOT NULL DEFAULT 100"
+        datetime created_at "NOT NULL UTC"
+        datetime updated_at "NOT NULL UTC"
+    }
+
+    websites {
+        bigint id PK "AUTO_INCREMENT"
+        bigint category_id FK "NULL -> website_categories.id SET NULL"
         varchar name "VARCHAR(150) NOT NULL"
-        varchar slug UK "VARCHAR(150) NOT NULL"
+        varchar brand_name "VARCHAR(150) NOT NULL"
+        varchar brand_slug "VARCHAR(150) NULL"
         varchar logo_url "VARCHAR(500) NULL"
-        text description "TEXT NULL"
+        text brand_description "TEXT NULL"
         varchar target_audience "VARCHAR(255) NULL"
         varchar target_country "VARCHAR(64) NULL"
         varchar primary_language "VARCHAR(32) NOT NULL DEFAULT en"
-        json secondary_languages "NULL e.g. fil, taglish, pt-BR"
+        json secondary_languages "NULL"
         varchar tone "VARCHAR(120) NULL"
         json target_keywords "NULL"
         json restricted_keywords "NULL"
@@ -217,33 +241,25 @@ erDiagram
         varchar default_cta "VARCHAR(255) NULL"
         text writing_guidelines "TEXT NULL"
         text ai_instructions "TEXT NULL"
-        boolean is_active "NOT NULL DEFAULT 1"
-        datetime created_at "NOT NULL UTC"
-        datetime updated_at "NOT NULL UTC"
-    }
-
-    websites {
-        bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        varchar name "VARCHAR(150) NOT NULL"
-        varchar domain "VARCHAR(255) NOT NULL normalized"
+        varchar domain UK "VARCHAR(255) NOT NULL normalized"
         varchar website_type "VARCHAR(32) NOT NULL wp/nuxt/nextjs/php/static/other/rest"
-        varchar discovery_method "VARCHAR(32) NOT NULL auto/rest_api/wordpress/rss/sitemap/llms_txt/html/playwright"
+        varchar discovery_method "VARCHAR(32) NOT NULL DEFAULT auto"
+        boolean single_source_only "NOT NULL DEFAULT 0"
         varchar rss_url "VARCHAR(500) NULL"
         varchar sitemap_url "VARCHAR(500) NULL"
         varchar llms_url "VARCHAR(500) NULL"
         varchar api_endpoint "VARCHAR(500) NULL"
-        json article_url_patterns "NULL glob patterns"
-        json excluded_url_patterns "NULL glob patterns"
-        int scan_interval_minutes "NOT NULL DEFAULT 360"
+        json article_url_patterns "NULL"
+        json excluded_url_patterns "NULL"
+        int scan_interval_minutes "NOT NULL DEFAULT 1440"
+        int crawl_batch_size "NOT NULL DEFAULT 100"
+        int crawl_max_urls_per_run "NOT NULL DEFAULT 1000"
         boolean auto_scan "NOT NULL DEFAULT 1"
         boolean auto_generate "NOT NULL DEFAULT 0"
         boolean initial_scan_completed "NOT NULL DEFAULT 0"
-        varchar baseline_mode "VARCHAR(32) NOT NULL import_existing/after_date/latest_n/new_only"
+        varchar baseline_mode "VARCHAR(32) NOT NULL"
         datetime baseline_after_date "NULL UTC"
         int baseline_limit "NULL"
-        varchar last_etag "VARCHAR(255) NULL"
-        varchar last_modified_header "VARCHAR(128) NULL"
         datetime last_scanned_at "NULL UTC"
         datetime last_successful_scan_at "NULL UTC"
         datetime next_scan_at "NULL UTC"
@@ -252,19 +268,63 @@ erDiagram
         datetime updated_at "NOT NULL UTC"
     }
 
+    website_discovery_sources {
+        bigint id PK "AUTO_INCREMENT"
+        bigint website_id FK "NOT NULL -> websites.id CASCADE"
+        bigint parent_source_id FK "NULL -> website_discovery_sources.id SET NULL"
+        varchar source_type "VARCHAR(32) NOT NULL homepage/rss/sitemap/wordpress/rest_api/llms_txt"
+        varchar endpoint_url "VARCHAR(1000) NOT NULL"
+        varchar endpoint_hash "VARCHAR(64) NOT NULL SHA-256"
+        boolean is_enabled "NOT NULL DEFAULT 1"
+        varchar etag "VARCHAR(255) NULL per endpoint"
+        varchar last_modified_header "VARCHAR(128) NULL per endpoint"
+        int last_status_code "NULL"
+        int last_urls_found "NOT NULL DEFAULT 0"
+        datetime last_checked_at "NULL UTC"
+        datetime last_success_at "NULL UTC"
+        text last_error "TEXT NULL"
+        datetime created_at "NOT NULL UTC"
+        datetime updated_at "NOT NULL UTC"
+    }
+
+    website_url_rules {
+        bigint id PK "AUTO_INCREMENT"
+        bigint website_id FK "NOT NULL -> websites.id CASCADE"
+        varchar pattern "VARCHAR(255) NOT NULL"
+        varchar target_content_type "VARCHAR(32) NOT NULL"
+        varchar match_mode "VARCHAR(24) NOT NULL prefix/glob/exact/regex"
+        int priority "NOT NULL DEFAULT 100"
+        boolean is_enabled "NOT NULL DEFAULT 1"
+        varchar notes "VARCHAR(255) NULL"
+        datetime created_at "NOT NULL UTC"
+        datetime updated_at "NOT NULL UTC"
+    }
+
     website_scan_logs {
         bigint id PK "AUTO_INCREMENT"
         bigint website_id FK "NOT NULL -> websites.id CASCADE"
-        varchar scan_method "VARCHAR(32) NOT NULL"
+        varchar scan_method "VARCHAR(64) NOT NULL"
+        varchar scan_mode "VARCHAR(32) NOT NULL full/incremental/resume/retry_failed/discover_only"
         varchar trigger_type "VARCHAR(32) NOT NULL manual/scheduled/retry"
         int urls_found "NOT NULL DEFAULT 0"
         int articles_processed "NOT NULL DEFAULT 0"
+        int urls_pending_extraction "NOT NULL DEFAULT 0"
         int new_articles "NOT NULL DEFAULT 0"
         int updated_articles "NOT NULL DEFAULT 0"
         int unchanged_articles "NOT NULL DEFAULT 0"
         int skipped_articles "NOT NULL DEFAULT 0"
         int failed_articles "NOT NULL DEFAULT 0"
-        varchar status "VARCHAR(32) NOT NULL pending/processing/completed/partially_completed/failed/cancelled"
+        int excluded_count "NOT NULL DEFAULT 0"
+        int homepage_count "NOT NULL DEFAULT 0"
+        int page_count "NOT NULL DEFAULT 0"
+        int blog_post_count "NOT NULL DEFAULT 0"
+        int other_count "NOT NULL DEFAULT 0"
+        varchar current_source "VARCHAR(120) NULL"
+        varchar current_url "VARCHAR(1000) NULL"
+        json discovered_sitemaps_json "NULL"
+        json sources_completed_json "NULL"
+        json sources_failed_json "NULL"
+        varchar status "VARCHAR(32) NOT NULL pending/processing/completed/partially_completed/incomplete/paused/failed/cancelled"
         text error_message "TEXT NULL redacted"
         int duration_ms "NULL"
         datetime heartbeat_at "NULL UTC stale recovery"
@@ -272,29 +332,53 @@ erDiagram
         datetime completed_at "NULL UTC"
         datetime created_at "NOT NULL UTC"
     }
+
+    website_scan_items {
+        bigint id PK "AUTO_INCREMENT"
+        bigint scan_log_id FK "NOT NULL -> website_scan_logs.id CASCADE"
+        bigint website_id FK "NOT NULL -> websites.id CASCADE"
+        bigint content_id FK "NULL -> website_contents.id SET NULL"
+        varchar url "VARCHAR(1000) NOT NULL"
+        varchar normalized_url "VARCHAR(1000) NOT NULL"
+        varchar url_hash "VARCHAR(64) NOT NULL SHA-256"
+        varchar content_type "VARCHAR(32) NOT NULL"
+        json discovery_sources "NULL"
+        varchar discovered_title "VARCHAR(500) NULL"
+        datetime discovered_published_at "NULL"
+        datetime discovered_modified_at "NULL"
+        varchar status "VARCHAR(32) NOT NULL pending/new/updated/unchanged/failed/excluded"
+        int http_status "NULL"
+        varchar failure_reason "VARCHAR(120) NULL"
+        varchar error_detail "VARCHAR(500) NULL"
+        datetime processed_at "NULL UTC"
+        datetime created_at "NOT NULL UTC"
+        datetime updated_at "NOT NULL UTC"
+    }
 ```
 
-#### Table Constraints, Indexes & Policies (Module 3.2 — Implemented Phase 2)
+#### Table Constraints, Indexes & Policies (Module 3.2 — Implemented Phase 2.1)
 
-- **`brands`**: PK `id`; Unique `uq_brands_slug (slug)`; Index `ix_brands_is_active (is_active)`. Deletion blocked (`409 Conflict`) while associated `websites` exist (`ON DELETE RESTRICT`); archive via `is_active = 0`.
-- **`websites`**: PK `id`; FK `fk_websites_brand_id_brands (brand_id -> brands.id ON DELETE RESTRICT)`; Unique `uq_websites_brand_domain (brand_id, domain)`; Indexes `ix_websites_brand_id`, `ix_websites_domain`, `ix_websites_status`, `ix_websites_next_scan_at`. Deletion blocked (`409 Conflict`) while associated `source_articles` exist.
-- **`website_scan_logs`**: PK `id`; FK `fk_website_scan_logs_website_id_websites (website_id -> websites.id ON DELETE CASCADE)`; Indexes `ix_website_scan_logs_website_started (website_id, started_at)`, `ix_website_scan_logs_status (status)`.
+- **`website_categories`**: PK `id`; Unique `uq_website_categories_slug`, `uq_website_categories_name`. Deletion blocked (`409 Conflict`) while assigned websites exist.
+- **`websites`**: PK `id`; FK `category_id -> website_categories.id ON DELETE SET NULL`; Unique `uq_websites_domain (domain)`; Indexes `ix_websites_category_id`, `ix_websites_domain`, `ix_websites_status`, `ix_websites_next_scan_at`. Owns merged brand identity (`brand_name`, `brand_slug`, `logo_url`, `writing_guidelines`, `ai_instructions`, languages, keywords, hashtags, CTA).
+- **`website_discovery_sources`**: PK `id`; Unique `uq_website_discovery_sources_ep (website_id, endpoint_hash)`. Stores isolated per-endpoint `etag` and `last_modified_header` so 304 responses are completely decoupled across endpoints.
+- **`website_url_rules`**: PK `id`; Index `ix_website_url_rules_site_prio (website_id, priority)`.
+- **`website_scan_logs` & `website_scan_items`**: Durable per-URL audit log (`uq_website_scan_items_scan_url`) backing resumable batching, exact count reconciliation, and failure inspection.
 
 ---
 
-### 3.3 Content Library and Media Assets *(Implemented — Phase 2, Migration `20261126_0002`)*
+### 3.3 Universal Content Library and Media Assets *(Implemented — Phase 2.1, Migration `20261127_0003`)*
 
 ```mermaid
 erDiagram
-    brands |o--o{ media_assets : "owns asset (nullable)"
-    websites ||--o{ source_articles : "discovers articles"
-    media_assets |o--o{ source_articles : "featured media (nullable)"
-    source_articles |o--o{ source_articles : "advisory near duplicate (nullable)"
-    source_articles ||--o{ source_article_revisions : "tracks content revisions"
+    websites |o--o{ media_assets : "owns media asset (nullable)"
+    websites ||--o{ website_contents : "discovers pages & posts"
+    media_assets |o--o{ website_contents : "featured media (nullable)"
+    website_contents |o--o{ website_contents : "advisory near duplicate (nullable)"
+    website_contents ||--o{ content_revisions : "tracks content revisions"
 
     media_assets {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NULL -> brands.id SET NULL"
+        bigint website_id FK "NULL -> websites.id SET NULL"
         varchar file_name "VARCHAR(255) NOT NULL"
         varchar file_path "VARCHAR(500) NULL under STORAGE_ROOT"
         varchar source_url "VARCHAR(1000) NULL"
@@ -307,40 +391,54 @@ erDiagram
         datetime created_at "NOT NULL UTC"
     }
 
-    source_articles {
+    website_contents {
         bigint id PK "AUTO_INCREMENT"
         bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint featured_media_id FK "NULL -> media_assets.id SET NULL"
+        varchar content_type "VARCHAR(32) NOT NULL homepage/page/blog_index/blog_post/category/tag/archive/custom"
+        varchar classification_method "VARCHAR(32) NOT NULL manual/root/custom_rule/default_rule/json_ld/source_evidence"
+        boolean manual_classification_override "NOT NULL DEFAULT 0"
+        boolean is_excluded "NOT NULL DEFAULT 0"
         varchar title "VARCHAR(500) NOT NULL"
+        varchar url "VARCHAR(1000) NOT NULL"
         varchar canonical_url "VARCHAR(1000) NOT NULL"
         varchar url_hash "VARCHAR(64) NOT NULL SHA-256"
-        varchar author "VARCHAR(150) NULL"
+        varchar author "VARCHAR(255) NULL"
         text meta_description "TEXT NULL"
+        varchar h1_text "VARCHAR(500) NULL"
         longtext original_content "LONGTEXT NULL sanitized"
+        longtext extracted_content "LONGTEXT NULL"
         longtext markdown_content "LONGTEXT NULL clean Markdown"
         mediumtext optimized_context "MEDIUMTEXT NULL Python token prep"
+        json structured_data_json "NULL JSON-LD/OG/nav/media metadata"
         json keywords "NULL YAKE keywords"
         json categories "NULL"
         json tags "NULL"
+        json discovery_sources "NULL aggregated source badges"
         varchar language "VARCHAR(32) NULL"
         varchar content_hash "VARCHAR(64) NOT NULL SHA-256"
         int word_count "NOT NULL DEFAULT 0"
-        varchar status "VARCHAR(32) NOT NULL discovered/extracted/optimized/updated/archived/error"
+        int http_status "NULL"
+        varchar extraction_status "VARCHAR(32) NOT NULL pending/extracted/failed"
+        varchar extraction_error "VARCHAR(500) NULL"
+        varchar status "VARCHAR(32) NOT NULL discovered/extracted/optimized/updated/failed/excluded/archived"
         boolean is_historical_baseline "NOT NULL DEFAULT 0"
-        bigint near_duplicate_of_id FK "NULL -> source_articles.id SET NULL"
+        bigint near_duplicate_of_id FK "NULL -> website_contents.id SET NULL"
         float near_duplicate_score "NULL RapidFuzz advisory score"
         datetime published_at "NULL UTC"
         datetime source_updated_at "NULL UTC"
-        datetime discovered_at "NOT NULL UTC"
+        datetime first_discovered_at "NOT NULL UTC"
+        datetime last_discovered_at "NOT NULL UTC"
         datetime last_checked_at "NOT NULL UTC"
         datetime created_at "NOT NULL UTC"
         datetime updated_at "NOT NULL UTC"
     }
 
-    source_article_revisions {
+    content_revisions {
         bigint id PK "AUTO_INCREMENT"
-        bigint article_id FK "NOT NULL -> source_articles.id CASCADE"
+        bigint content_id FK "NOT NULL -> website_contents.id CASCADE"
         int revision_number "INT NOT NULL"
+        varchar content_type "VARCHAR(32) NULL"
         varchar title "VARCHAR(500) NOT NULL"
         text meta_description "TEXT NULL"
         longtext markdown_content "LONGTEXT NULL"
@@ -349,11 +447,11 @@ erDiagram
     }
 ```
 
-#### Table Constraints, Indexes & Policies (Module 3.3 — Implemented Phase 2)
+#### Table Constraints, Indexes & Policies (Module 3.3 — Implemented Phase 2.1)
 
-- **`media_assets`**: PK `id`; FK `fk_media_assets_brand_id_brands (brand_id -> brands.id ON DELETE SET NULL)`; Indexes `ix_media_assets_brand_id`, `ix_media_assets_checksum`.
-- **`source_articles`**: PK `id`; FKs `website_id -> websites.id ON DELETE RESTRICT`, `featured_media_id -> media_assets.id ON DELETE SET NULL`, `near_duplicate_of_id -> source_articles.id ON DELETE SET NULL`; Unique `uq_source_articles_website_url_hash (website_id, url_hash)`; Indexes `ix_source_articles_website_id`, `ix_source_articles_content_hash`, `ix_source_articles_published_at`, `ix_source_articles_status`, and MySQL `FULLTEXT INDEX ft_source_articles_search (title, meta_description, markdown_content)`.
-- **`source_article_revisions`**: PK `id`; FK `article_id -> source_articles.id ON DELETE CASCADE`; Unique `uq_source_article_revisions_article_rev (article_id, revision_number)`; Index `ix_source_article_revisions_article_id`.
+- **`media_assets`**: PK `id`; FK `fk_media_assets_website_id_websites (website_id -> websites.id ON DELETE SET NULL)`; Indexes `ix_media_assets_website_id`, `ix_media_assets_checksum`.
+- **`website_contents`**: PK `id`; FKs `website_id -> websites.id ON DELETE RESTRICT`, `featured_media_id -> media_assets.id ON DELETE SET NULL`, `near_duplicate_of_id -> website_contents.id ON DELETE SET NULL`; Unique `uq_website_contents_site_url_hash (website_id, url_hash)`; Indexes `ix_website_contents_site_type`, `ix_website_contents_extract_status`, `ix_website_contents_status`, and MySQL `FULLTEXT INDEX ft_website_contents_search (title, meta_description, markdown_content)`.
+- **`content_revisions`**: PK `id`; FK `content_id -> website_contents.id ON DELETE CASCADE`; Unique `uq_content_revisions_content_rev (content_id, revision_number)`.
 
 ---
 
@@ -365,9 +463,9 @@ erDiagram
     ai_providers ||--o{ ai_generation_logs : "records API usage"
     prompt_templates |o--o{ ai_response_cache : "keyed by prompt version (nullable)"
     prompt_templates |o--o{ ai_generation_logs : "invoked template (nullable)"
-    brands |o--o{ prompt_templates : "brand override (nullable)"
-    brands |o--o{ ai_generation_logs : "attributed brand (nullable)"
-    source_articles |o--o{ ai_generation_logs : "source input (nullable)"
+    websites |o--o{ prompt_templates : "website override (nullable)"
+    websites |o--o{ ai_generation_logs : "attributed website (nullable)"
+    website_contents |o--o{ ai_generation_logs : "source content (nullable)"
     editorial_articles |o--o{ ai_generation_logs : "editorial output (nullable)"
 
     ai_providers {
@@ -389,7 +487,7 @@ erDiagram
 
     prompt_templates {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NULL -> brands.id SET NULL global if null"
+        bigint website_id FK "NULL -> websites.id SET NULL global if null"
         varchar template_key "VARCHAR(100) NOT NULL"
         int version "INT NOT NULL DEFAULT 1"
         varchar purpose "VARCHAR(64) NOT NULL social_batch/topics/outline/article"
@@ -426,8 +524,8 @@ erDiagram
         bigint id PK "AUTO_INCREMENT"
         bigint ai_provider_id FK "NOT NULL -> ai_providers.id RESTRICT"
         bigint prompt_template_id FK "NULL -> prompt_templates.id SET NULL"
-        bigint brand_id FK "NULL -> brands.id SET NULL"
-        bigint source_article_id FK "NULL -> source_articles.id SET NULL"
+        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_content_id FK "NULL -> website_contents.id SET NULL"
         bigint editorial_article_id FK "NULL -> editorial_articles.id SET NULL"
         varchar task_type "VARCHAR(64) NOT NULL social_batch/topics/outline/article"
         varchar model_name "VARCHAR(120) NOT NULL"
@@ -469,10 +567,9 @@ erDiagram
 ```mermaid
 erDiagram
     platforms ||--o{ connected_accounts : "implements adapter for"
-    brands ||--o{ connected_accounts : "connects accounts"
-    brands ||--o{ social_posts : "owns drafts and posts"
-    websites |o--o{ social_posts : "source website (nullable)"
-    source_articles |o--o{ social_posts : "promoted article (nullable)"
+    websites ||--o{ connected_accounts : "connects accounts"
+    websites ||--o{ social_posts : "owns drafts and posts"
+    website_contents |o--o{ social_posts : "promoted content (nullable)"
     editorial_articles |o--o{ social_posts : "promoted editorial (nullable)"
     platforms ||--o{ social_posts : "targets platform"
     connected_accounts |o--o{ social_posts : "destination account (nullable for manual)"
@@ -498,7 +595,7 @@ erDiagram
 
     connected_accounts {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint platform_id FK "NOT NULL -> platforms.id RESTRICT"
         varchar account_name "VARCHAR(150) NOT NULL"
         varchar account_external_id "VARCHAR(255) NOT NULL page/blog/site id"
@@ -519,9 +616,8 @@ erDiagram
 
     social_posts {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
-        bigint source_article_id FK "NULL -> source_articles.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
+        bigint website_content_id FK "NULL -> website_contents.id SET NULL"
         bigint editorial_article_id FK "NULL -> editorial_articles.id SET NULL"
         bigint platform_id FK "NOT NULL -> platforms.id RESTRICT"
         bigint connected_account_id FK "NULL -> connected_accounts.id SET NULL"
@@ -592,14 +688,12 @@ erDiagram
 
 ```mermaid
 erDiagram
-    brands ||--o{ keyword_research : "researches keywords"
-    websites |o--o{ keyword_research : "scoped to site (nullable)"
-    brands ||--o{ editorial_plans : "organizes calendar plans"
-    websites |o--o{ editorial_plans : "target site (nullable)"
-    brands ||--o{ editorial_topics : "suggests topics"
+    websites ||--o{ keyword_research : "researches keywords"
+    websites ||--o{ editorial_plans : "organizes calendar plans"
+    websites ||--o{ editorial_topics : "suggests topics"
     editorial_plans |o--o{ editorial_topics : "groups into plan (nullable)"
     keyword_research |o--o{ editorial_topics : "primary keyword (nullable)"
-    brands ||--o{ editorial_articles : "authors articles"
+    websites ||--o{ editorial_articles : "authors articles"
     editorial_topics |o--o{ editorial_articles : "drafted from topic (nullable)"
     connected_accounts |o--o{ editorial_articles : "CMS publish target (nullable)"
     media_assets |o--o{ editorial_articles : "featured image (nullable)"
@@ -607,8 +701,7 @@ erDiagram
 
     keyword_research {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         varchar keyword "VARCHAR(255) NOT NULL"
         char keyword_hash "CHAR(64) NOT NULL SHA-256 normalized keyword"
         varchar source "VARCHAR(32) NOT NULL manual/gsc/google_trends/gap_analysis"
@@ -627,8 +720,7 @@ erDiagram
 
     editorial_plans {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         varchar title "VARCHAR(200) NOT NULL"
         varchar plan_type "VARCHAR(24) NOT NULL weekly/monthly"
         date period_start "DATE NOT NULL"
@@ -642,8 +734,7 @@ erDiagram
 
     editorial_topics {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint editorial_plan_id FK "NULL -> editorial_plans.id SET NULL"
         bigint primary_keyword_id FK "NULL -> keyword_research.id SET NULL"
         varchar title "VARCHAR(300) NOT NULL"
@@ -663,8 +754,7 @@ erDiagram
 
     editorial_articles {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint editorial_topic_id FK "NULL -> editorial_topics.id SET NULL"
         bigint connected_account_id FK "NULL -> connected_accounts.id SET NULL"
         bigint featured_image_asset_id FK "NULL -> media_assets.id SET NULL"
@@ -735,22 +825,19 @@ erDiagram
 
 ```mermaid
 erDiagram
-    brands ||--o{ publishing_schedules : "schedules items for"
-    websites |o--o{ publishing_schedules : "target site (nullable)"
+    websites ||--o{ publishing_schedules : "schedules items for"
     connected_accounts |o--o{ publishing_schedules : "target account (nullable)"
     social_posts |o--o{ publishing_schedules : "scheduled social post (nullable)"
     editorial_articles |o--o{ publishing_schedules : "scheduled article (nullable)"
     editorial_topics |o--o{ publishing_schedules : "planned topic (nullable)"
     publishing_schedules |o--o{ publishing_jobs : "dispatches execution job (nullable)"
-    brands ||--o{ automation_rules : "configures rules"
-    websites |o--o{ automation_rules : "scoped to site (nullable)"
+    websites ||--o{ automation_rules : "configures rules"
     connected_accounts |o--o{ automation_rules : "scoped to account (nullable)"
     publishing_jobs |o--o{ scheduled_tasks : "last enqueued job (nullable)"
 
     publishing_schedules {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint connected_account_id FK "NULL -> connected_accounts.id SET NULL"
         varchar entity_type "VARCHAR(32) NOT NULL social_post/editorial_article/editorial_topic"
         bigint social_post_id FK "NULL -> social_posts.id CASCADE"
@@ -798,8 +885,7 @@ erDiagram
 
     automation_rules {
         bigint id PK "AUTO_INCREMENT"
-        bigint brand_id FK "NOT NULL -> brands.id RESTRICT"
-        bigint website_id FK "NULL -> websites.id SET NULL"
+        bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint connected_account_id FK "NULL -> connected_accounts.id SET NULL"
         varchar rule_name "VARCHAR(150) NOT NULL"
         varchar trigger_event "VARCHAR(64) NOT NULL article_discovered/post_approved/etc"
@@ -878,7 +964,6 @@ erDiagram
 
 ```mermaid
 erDiagram
-    brands |o--o{ analytics_records : "brand rollup (nullable)"
     websites |o--o{ analytics_records : "website rollup (nullable)"
     platforms |o--o{ analytics_records : "platform rollup (nullable)"
     users |o--o{ backup_records : "triggered by (nullable)"
@@ -887,9 +972,8 @@ erDiagram
     analytics_records {
         bigint id PK "AUTO_INCREMENT"
         date metric_date "DATE NOT NULL UTC day"
-        varchar scope_type "VARCHAR(24) NOT NULL global/brand/website/platform"
+        varchar scope_type "VARCHAR(24) NOT NULL global/website/platform"
         varchar scope_key "VARCHAR(128) NOT NULL non-null composite dedupe key"
-        bigint brand_id FK "NULL -> brands.id SET NULL"
         bigint website_id FK "NULL -> websites.id SET NULL"
         bigint platform_id FK "NULL -> platforms.id SET NULL"
         varchar metric_key "VARCHAR(80) NOT NULL e.g. posts_published, gemini_tokens"

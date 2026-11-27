@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 
 from app.config import Settings
-from app.core.exceptions import ConflictError, ServiceUnavailableError
+from app.core.exceptions import ConflictError
 from app.models.base import utc_now_naive
 from app.schemas.health import ResourceThresholdsInfo, SystemResourcesInfo
 from app.services.content.duplicate import compute_content_hash, find_near_duplicate
@@ -26,6 +26,21 @@ from app.services.scanner.exceptions import SSRFBlockedError
 from app.services.scanner.security import SafeHttpFetcher
 from app.services.settings_service import SettingsService
 from tests.conftest import public_dns_resolver
+
+SAMPLE_HOMEPAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <title>Example Portal — Fast Sports &amp; Editorial Insights</title>
+  <meta name="description" content="Trusted editorial portal for technical SEO and guides." />
+</head>
+<body>
+  <main>
+    <h1>Welcome to Example Portal</h1>
+    <p>Explore practical research, product comparisons, and industry guides.</p>
+    <a href="/blog/technical-seo">Read Technical SEO Guide</a>
+  </main>
+</body>
+</html>"""
 
 SAMPLE_ARTICLE_V1 = """<!doctype html>
 <html lang="en">
@@ -95,20 +110,23 @@ def test_content_extraction_sanitization_keywords_optimizer_and_near_duplicate(
         page_url="https://example.com/blog/technical-seo?utm_source=fb",
         domain="example.com",
     )
+    assert extracted.content_type == "blog_post"
     assert extracted.canonical_url == "https://example.com/blog/technical-seo"
     assert extracted.author == "Maria Santos"
     assert extracted.categories == ["SEO"]
     assert extracted.tags == ["Crawling"]
     assert extracted.word_count >= 40
     assert len(extracted.keywords) >= 3
-    assert "Title: How Technical SEO Drives Sustainable Traffic" in extracted.optimized_context
+    assert "Title:" in extracted.optimized_context
+    assert "How Technical SEO Drives Sustainable Traffic" in extracted.optimized_context
     assert len(extracted.optimized_context) <= test_settings.content_max_context_chars
 
-    # Near-duplicate detection identifies similar content without mutating records.
-    existing = memory_repos["articles"].create(
+    existing = memory_repos["contents"].create(
         {
             "website_id": 1,
+            "content_type": "blog_post",
             "title": extracted.title,
+            "url": "https://example.com/blog/other",
             "canonical_url": "https://example.com/blog/other",
             "url_hash": "0" * 64,
             "markdown_content": extracted.markdown_content,
@@ -118,7 +136,7 @@ def test_content_extraction_sanitization_keywords_optimizer_and_near_duplicate(
     match = find_near_duplicate(
         title=extracted.title,
         markdown_content=extracted.markdown_content,
-        existing_articles=[existing],
+        existing_contents=[existing],
         threshold=85.0,
     )
     assert match is not None
@@ -161,41 +179,39 @@ def test_media_validation_pillow_local_dedupe_and_ssrf_protection(
 
     first = processor.process_featured_image(
         source_url="https://example.com/images/seo-hero.png",
-        brand_id=1,
+        website_id=1,
         storage_mode="local",
     )
     second = processor.process_featured_image(
         source_url="https://example.com/images/seo-hero-copy.png",
-        brand_id=1,
+        website_id=1,
         storage_mode="local",
     )
     assert first is not None and second is not None
-    assert first.id == second.id  # Deduplicated by SHA-256 checksum!
+    assert first.id == second.id
     assert first.file_path is not None
 
     with pytest.raises(SSRFBlockedError):
         processor.process_featured_image(
             source_url="http://127.0.0.1/internal.png",
-            brand_id=1,
+            website_id=1,
             storage_mode="local",
         )
 
 
-def test_scan_lifecycle_baseline_dedupe_revisions_locking_stale_recovery_and_resource_guardian(
+def test_scan_lifecycle_dedupe_revisions_locking_stale_recovery_and_resource_guardian(
     test_settings: Settings,
     memory_repos: dict[str, Any],
     db_diagnostic_ok: Any,
 ) -> None:
-    brand = memory_repos["brands"].create(
-        {"name": "Ops Brand", "slug": "ops-brand", "primary_language": "en"}
-    )
     site = memory_repos["websites"].create(
         {
-            "brand_id": brand.id,
+            "category_id": 1,
             "name": "Ops Site",
+            "brand_name": "Ops Brand",
             "domain": "example.com",
             "website_type": "static_html",
-            "discovery_method": "rss",
+            "discovery_method": "auto",
             "rss_url": "https://example.com/feed.xml",
             "scan_interval_minutes": 60,
             "auto_scan": True,
@@ -218,6 +234,8 @@ def test_scan_lifecycle_baseline_dedupe_revisions_locking_stale_recovery_and_res
         url = str(req.url)
         if url == "https://example.com/robots.txt":
             return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if url == "https://example.com/":
+            return httpx.Response(200, text=SAMPLE_HOMEPAGE_HTML)
         if url == "https://example.com/feed.xml":
             return httpx.Response(200, text=rss_xml)
         if url == "https://example.com/blog/technical-seo":
@@ -267,8 +285,8 @@ def test_scan_lifecycle_baseline_dedupe_revisions_locking_stale_recovery_and_res
     executor = ScanExecutorService(
         settings=test_settings,
         website_repo=memory_repos["websites"],
-        brand_repo=memory_repos["brands"],
-        article_repo=memory_repos["articles"],
+        source_config_repo=memory_repos["sources"],
+        content_repo=memory_repos["contents"],
         scan_log_repo=memory_repos["scans"],
         media_repo=memory_repos["media"],
         activity_repo=memory_repos["activities"],
@@ -278,43 +296,49 @@ def test_scan_lifecycle_baseline_dedupe_revisions_locking_stale_recovery_and_res
         settings_service=settings_service,
         fetcher=fetcher,
         dispatcher=lambda _sid: None,
-        sleep_fn=lambda _sec: None,
     )
 
-    # 1. Enqueue first baseline scan & verify active lock blocks duplicate scan.
+    # 1. Enqueue first scan & verify active lock blocks duplicate scan.
     scan1 = executor.enqueue_scan(site.id, trigger_type="manual", dispatch=False)
     with pytest.raises(ConflictError):
         executor.enqueue_scan(site.id, trigger_type="manual", dispatch=False)
 
     res1 = executor.execute_scan(scan1.id)
     assert res1.status == "completed"
-    assert res1.new_articles == 1
+    # Aggregated discovery captures homepage (/) and blog post (/blog/technical-seo)
+    assert res1.new_articles == 2
+    assert res1.homepage_count == 1
+    assert res1.blog_post_count == 1
     assert memory_repos["websites"].get_by_id(site.id).initial_scan_completed is True
-    art = memory_repos["articles"].list_recent_for_website(site.id)[0]
-    assert art.is_historical_baseline is True
-    assert memory_repos["articles"].list_revisions(art.id) == []
 
     # 2. Second scan with identical content -> unchanged, zero duplicate rows.
     scan2 = executor.enqueue_scan(site.id, trigger_type="manual", dispatch=False)
     res2 = executor.execute_scan(scan2.id)
-    assert res2.unchanged_articles == 1
+    assert res2.unchanged_articles == 2
     assert res2.new_articles == 0
-    assert memory_repos["articles"].count_by_website(site.id) == 1
+    assert memory_repos["contents"].count_by_website(site.id) == 2
 
-    # 3. Third scan with updated content -> revision snapshot created & article updated.
+    # 3. Third scan with updated article body -> revision snapshot created & content updated.
     article_version[0] = SAMPLE_ARTICLE_V2
     scan3 = executor.enqueue_scan(site.id, trigger_type="manual", dispatch=False)
     res3 = executor.execute_scan(scan3.id)
     assert res3.updated_articles == 1
-    revs = memory_repos["articles"].list_revisions(art.id)
+    assert res3.unchanged_articles == 1
+    posts = [
+        c
+        for c in memory_repos["contents"].list_for_website(site.id)
+        if c.content_type == "blog_post"
+    ]
+    assert len(posts) == 1
+    art = posts[0]
+    revs = memory_repos["contents"].list_revisions(art.id)
     assert len(revs) == 1
     assert revs[0].revision_number == 1
-    updated_art = memory_repos["articles"].get_by_id(art.id)
-    assert updated_art is not None and updated_art.status == "updated"
+    assert art.status == "updated"
 
     # 4. Stale scan recovery recovers stuck scan and allows a fresh scan.
     stuck = memory_repos["scans"].create(
-        website_id=site.id, scan_method="rss", trigger_type="manual", status="processing"
+        website_id=site.id, scan_method="auto", trigger_type="manual", status="processing"
     )
     stuck.heartbeat_at = utc_now_naive() - timedelta(
         minutes=test_settings.scanner_stale_timeout_minutes + 5
@@ -324,7 +348,6 @@ def test_scan_lifecycle_baseline_dedupe_revisions_locking_stale_recovery_and_res
     assert scan4.status == "pending"
     memory_repos["scans"].update(scan4.id, {"status": "failed", "error_message": "Simulated crash"})
 
-    # Retry failed scan creates new pending scan.
     retried = executor.retry_scan(scan4.id, user_id=1, ip_address="127.0.0.1", dispatch=False)
     assert retried.trigger_type == "retry"
     memory_repos["scans"].update(retried.id, {"status": "completed"})
@@ -361,15 +384,16 @@ def test_scan_lifecycle_baseline_dedupe_revisions_locking_stale_recovery_and_res
     executor.health_service = ConstrainedHealthService(
         settings=test_settings, db_checker=lambda: db_diagnostic_ok
     )
-    with pytest.raises(ServiceUnavailableError):
-        executor.enqueue_scan(site.id, trigger_type="manual", dispatch=False)
+    paused_scan = executor.enqueue_scan(site.id, trigger_type="manual", dispatch=False)
+    paused_res = executor.execute_scan(paused_scan.id)
+    assert paused_res.status == "paused"
 
     sched_summary = executor.run_due_scheduled_scans()
     assert sched_summary.paused_by_resource_guardian is True
     assert sched_summary.scans_executed == 0
 
 
-def test_articles_media_and_scan_api_endpoints(
+def test_contents_media_and_scan_api_endpoints(
     app: Any,
     test_settings: Settings,
     auth_client: tuple[Any, str],
@@ -379,21 +403,19 @@ def test_articles_media_and_scan_api_endpoints(
 
     client, csrf = auth_client
 
-    brand = memory_repos["brands"].create(
-        {"name": "Lib Brand", "slug": "lib-brand", "primary_language": "en"}
-    )
     site = memory_repos["websites"].create(
         {
-            "brand_id": brand.id,
+            "category_id": 1,
             "name": "Lib Site",
+            "brand_name": "Lib Brand",
             "domain": "example.com",
             "website_type": "wordpress",
-            "discovery_method": "rss",
+            "discovery_method": "auto",
             "scan_interval_minutes": 360,
         }
     )
     media = memory_repos["media"].create(
-        brand_id=brand.id,
+        website_id=site.id,
         file_name="hero.png",
         file_path=None,
         source_url="https://example.com/images/seo-hero.png",
@@ -404,11 +426,13 @@ def test_articles_media_and_scan_api_endpoints(
         alt_text="Hero",
         checksum="f" * 64,
     )
-    article = memory_repos["articles"].create(
+    content = memory_repos["contents"].create(
         {
             "website_id": site.id,
             "featured_media_id": media.id,
+            "content_type": "blog_post",
             "title": "Initial Title",
+            "url": "https://example.com/blog/technical-seo",
             "canonical_url": "https://example.com/blog/technical-seo",
             "url_hash": "a" * 64,
             "markdown_content": "Old body",
@@ -418,6 +442,7 @@ def test_articles_media_and_scan_api_endpoints(
             "language": "en",
             "content_hash": "b" * 64,
             "word_count": 2,
+            "extraction_status": "extracted",
             "status": "optimized",
         }
     )
@@ -432,31 +457,37 @@ def test_articles_media_and_scan_api_endpoints(
         ),
     )
 
-    list_resp = client.get("/api/v1/articles", params={"brand_id": brand.id, "category": "SEO"})
+    list_resp = client.get(
+        "/api/v1/contents",
+        params={"website_id": site.id, "tag_or_category": "SEO"},
+    )
     assert list_resp.status_code == 200
     assert list_resp.json()["meta"]["total_items"] == 1
+    assert list_resp.json()["stats"]["blog_post_count"] == 1
 
     reproc = client.post(
-        f"/api/v1/articles/{article.id}/reprocess",
+        f"/api/v1/contents/{content.id}/reprocess",
         headers={"X-CSRF-Token": csrf},
     )
     assert reproc.status_code == 200
     assert reproc.json()["status"] == "updated"
     assert reproc.json()["revision_count"] == 1
 
-    revs = client.get(f"/api/v1/articles/{article.id}/revisions")
+    revs = client.get(f"/api/v1/contents/{content.id}/revisions")
     assert revs.status_code == 200
     assert len(revs.json()) == 1
 
     patch = client.patch(
-        f"/api/v1/articles/{article.id}",
+        f"/api/v1/contents/{content.id}",
         headers={"X-CSRF-Token": csrf},
-        json={"status": "archived"},
+        json={"content_type": "page", "status": "archived"},
     )
     assert patch.status_code == 200
     assert patch.json()["status"] == "archived"
+    assert patch.json()["content_type"] == "page"
+    assert patch.json()["manual_classification_override"] is True
 
-    media_list = client.get("/api/v1/media", params={"brand_id": brand.id})
+    media_list = client.get("/api/v1/media", params={"website_id": site.id})
     assert media_list.status_code == 200
     assert media_list.json()["meta"]["total_items"] >= 1
     assert client.get(f"/api/v1/media/{media.id}").status_code == 200

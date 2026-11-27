@@ -15,17 +15,27 @@ from app.repositories.activity_log_repo import (
     ActivityLogRepositoryProtocol,
     SQLAlchemyActivityLogRepository,
 )
-from app.repositories.article_repo import ArticleRepositoryProtocol, SQLAlchemyArticleRepository
-from app.repositories.brand_repo import BrandRepositoryProtocol, SQLAlchemyBrandRepository
+from app.repositories.category_repo import (
+    SQLAlchemyWebsiteCategoryRepository,
+    WebsiteCategoryRepositoryProtocol,
+)
+from app.repositories.content_repo import (
+    ContentRepositoryProtocol,
+    SQLAlchemyContentRepository,
+)
 from app.repositories.media_repo import MediaRepositoryProtocol, SQLAlchemyMediaRepository
 from app.repositories.scan_log_repo import ScanLogRepositoryProtocol, SQLAlchemyScanLogRepository
 from app.repositories.session_repo import SessionRepositoryProtocol, SQLAlchemySessionRepository
 from app.repositories.settings_repo import SettingsRepositoryProtocol, SQLAlchemySettingsRepository
 from app.repositories.user_repo import SQLAlchemyUserRepository, UserRepositoryProtocol
 from app.repositories.website_repo import SQLAlchemyWebsiteRepository, WebsiteRepositoryProtocol
-from app.services.article_service import ArticleService
+from app.repositories.website_source_repo import (
+    SQLAlchemyWebsiteSourceConfigRepository,
+    WebsiteSourceConfigRepositoryProtocol,
+)
 from app.services.auth_service import AuthenticatedSession, AuthService
-from app.services.brand_service import BrandService
+from app.services.category_service import WebsiteCategoryService
+from app.services.content_service import ContentService
 from app.services.dashboard_service import DashboardService
 from app.services.media_service import MediaService
 from app.services.monitoring.health_service import HealthService
@@ -87,8 +97,10 @@ def get_activity_log_repo(
     return SQLAlchemyActivityLogRepository(db)
 
 
-def get_brand_repo(db: Annotated[Session, Depends(get_db_session)]) -> BrandRepositoryProtocol:
-    return SQLAlchemyBrandRepository(db)
+def get_category_repo(
+    db: Annotated[Session, Depends(get_db_session)],
+) -> WebsiteCategoryRepositoryProtocol:
+    return SQLAlchemyWebsiteCategoryRepository(db)
 
 
 def get_website_repo(
@@ -97,10 +109,16 @@ def get_website_repo(
     return SQLAlchemyWebsiteRepository(db)
 
 
-def get_article_repo(
+def get_website_source_repo(
     db: Annotated[Session, Depends(get_db_session)],
-) -> ArticleRepositoryProtocol:
-    return SQLAlchemyArticleRepository(db)
+) -> WebsiteSourceConfigRepositoryProtocol:
+    return SQLAlchemyWebsiteSourceConfigRepository(db)
+
+
+def get_content_repo(
+    db: Annotated[Session, Depends(get_db_session)],
+) -> ContentRepositoryProtocol:
+    return SQLAlchemyContentRepository(db)
 
 
 def get_scan_log_repo(
@@ -164,6 +182,18 @@ def get_health_service(
     return HealthService(settings=settings, db_checker=db_checker)
 
 
+def get_category_service(
+    category_repo: Annotated[WebsiteCategoryRepositoryProtocol, Depends(get_category_repo)],
+    website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
+    activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
+) -> WebsiteCategoryService:
+    return WebsiteCategoryService(
+        category_repo=category_repo,
+        website_repo=website_repo,
+        activity_repo=activity_repo,
+    )
+
+
 def get_dashboard_service(
     settings: Annotated[Settings, Depends(get_app_settings)],
     health_service: Annotated[HealthService, Depends(get_health_service)],
@@ -171,9 +201,9 @@ def get_dashboard_service(
     session_repo: Annotated[SessionRepositoryProtocol, Depends(get_session_repo)],
     settings_repo: Annotated[SettingsRepositoryProtocol, Depends(get_settings_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
-    brand_repo: Annotated[BrandRepositoryProtocol, Depends(get_brand_repo)],
+    category_repo: Annotated[WebsiteCategoryRepositoryProtocol, Depends(get_category_repo)],
     website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
-    article_repo: Annotated[ArticleRepositoryProtocol, Depends(get_article_repo)],
+    content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
     scan_log_repo: Annotated[ScanLogRepositoryProtocol, Depends(get_scan_log_repo)],
 ) -> DashboardService:
     return DashboardService(
@@ -183,42 +213,32 @@ def get_dashboard_service(
         session_repo=session_repo,
         settings_repo=settings_repo,
         activity_repo=activity_repo,
-        brand_repo=brand_repo,
+        category_repo=category_repo,
         website_repo=website_repo,
-        article_repo=article_repo,
+        content_repo=content_repo,
         scan_log_repo=scan_log_repo,
-    )
-
-
-def get_brand_service(
-    settings: Annotated[Settings, Depends(get_app_settings)],
-    brand_repo: Annotated[BrandRepositoryProtocol, Depends(get_brand_repo)],
-    website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
-    media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
-    activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
-) -> BrandService:
-    return BrandService(
-        settings=settings,
-        brand_repo=brand_repo,
-        website_repo=website_repo,
-        media_repo=media_repo,
-        activity_repo=activity_repo,
     )
 
 
 def get_website_service(
     settings: Annotated[Settings, Depends(get_app_settings)],
     website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
-    brand_repo: Annotated[BrandRepositoryProtocol, Depends(get_brand_repo)],
-    article_repo: Annotated[ArticleRepositoryProtocol, Depends(get_article_repo)],
+    category_repo: Annotated[WebsiteCategoryRepositoryProtocol, Depends(get_category_repo)],
+    source_config_repo: Annotated[
+        WebsiteSourceConfigRepositoryProtocol, Depends(get_website_source_repo)
+    ],
+    content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
+    media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
     fetcher: Annotated[SafeHttpFetcher, Depends(get_http_fetcher)],
 ) -> WebsiteService:
     return WebsiteService(
         settings=settings,
         website_repo=website_repo,
-        brand_repo=brand_repo,
-        article_repo=article_repo,
+        category_repo=category_repo,
+        source_config_repo=source_config_repo,
+        content_repo=content_repo,
+        media_repo=media_repo,
         activity_repo=activity_repo,
         fetcher=fetcher,
     )
@@ -227,8 +247,10 @@ def get_website_service(
 def get_scan_executor_service(
     settings: Annotated[Settings, Depends(get_app_settings)],
     website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
-    brand_repo: Annotated[BrandRepositoryProtocol, Depends(get_brand_repo)],
-    article_repo: Annotated[ArticleRepositoryProtocol, Depends(get_article_repo)],
+    source_config_repo: Annotated[
+        WebsiteSourceConfigRepositoryProtocol, Depends(get_website_source_repo)
+    ],
+    content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
     scan_log_repo: Annotated[ScanLogRepositoryProtocol, Depends(get_scan_log_repo)],
     media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
@@ -240,8 +262,8 @@ def get_scan_executor_service(
     return ScanExecutorService(
         settings=settings,
         website_repo=website_repo,
-        brand_repo=brand_repo,
-        article_repo=article_repo,
+        source_config_repo=source_config_repo,
+        content_repo=content_repo,
         scan_log_repo=scan_log_repo,
         media_repo=media_repo,
         activity_repo=activity_repo,
@@ -252,20 +274,24 @@ def get_scan_executor_service(
     )
 
 
-def get_article_service(
+def get_content_service(
     settings: Annotated[Settings, Depends(get_app_settings)],
-    article_repo: Annotated[ArticleRepositoryProtocol, Depends(get_article_repo)],
+    content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
     website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
-    brand_repo: Annotated[BrandRepositoryProtocol, Depends(get_brand_repo)],
+    category_repo: Annotated[WebsiteCategoryRepositoryProtocol, Depends(get_category_repo)],
+    source_config_repo: Annotated[
+        WebsiteSourceConfigRepositoryProtocol, Depends(get_website_source_repo)
+    ],
     media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
     fetcher: Annotated[SafeHttpFetcher, Depends(get_http_fetcher)],
-) -> ArticleService:
-    return ArticleService(
+) -> ContentService:
+    return ContentService(
         settings=settings,
-        article_repo=article_repo,
+        content_repo=content_repo,
         website_repo=website_repo,
-        brand_repo=brand_repo,
+        category_repo=category_repo,
+        source_config_repo=source_config_repo,
         media_repo=media_repo,
         activity_repo=activity_repo,
         fetcher=fetcher,

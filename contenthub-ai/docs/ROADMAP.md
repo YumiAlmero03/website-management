@@ -12,14 +12,13 @@ Development proceeds strictly one phase at a time. Each phase ends with validati
 - Single-administrator CLI initializer (`init-admin`) and DB checker (`check-db`)
 - Secure login/logout, session cookies, CSRF protection, login rate limiting, protected routes
 
-## Phase 2 — Website Monitoring *(Completed — Ready for Review)*
-- Incremental MySQL migration (`20261126_0002`: `brands`, `media_assets`, `websites`, `source_articles`, `source_article_revisions`, `website_scan_logs` + InnoDB `FULLTEXT`)
-- Brand Management CRUD (multi-language, logo upload, keywords, hashtags, CTA, safe deletion guard)
-- Website Management CRUD (7 website types, URL include/exclude patterns, connectivity test, auto-discovery, baseline modes)
-- SSRF-hardened Website Scanner (REST -> WordPress -> RSS/Atom -> XML Sitemap/Index -> `llms.txt` -> HTML -> optional Playwright fallback)
-- Python-first Content Extraction (Trafilatura + BS4, Markdownify, YAKE keywords, extractive token optimization prep, SHA-256 + RapidFuzz duplicate checks, revision history, Pillow media validation)
-- Non-blocking durable scan executor, stale scan recovery, Resource Guardian integration, `run-scan` & `run-due-scans` CLI commands
-- Live Brands, Websites, Scan Monitor, Content Library, Global Selectors, and updated Dashboard UI
+## Phase 2.1 — Website-Centric Refinement, Aggregated Discovery & Classifier *(Completed — Ready for Review)*
+- Merged Brand identity & guidelines directly into Website Management (`websites` table; removed separate `/brands` sidebar/routes/API; kept global website selector; moved `media_assets` ownership to `website_id`)
+- Administrator-defined Custom Website Categories under Settings (`website_categories` CRUD, archive, delete-when-unused guard, inline category creation)
+- Simplified 5-field Register Website flow with expandable Advanced Settings (`website_type`, brand voice, custom endpoints, `crawl_batch_size`, `crawl_max_urls_per_run`, `single_source_only`)
+- Fixed scanner bugs: replaced first-success-only discovery with true multi-source aggregation (`WebsiteDiscoveryManager`), isolated per-endpoint `ETag`/`Last-Modified` in `website_discovery_sources` (304 no longer drops items or halts sitemaps), supported recursive/custom `.php`/`.xml.gz` sitemaps detected by XML body, lifted 100-URL truncation via two-phase discovery (`website_scan_items`) + resumable batched extraction (`Discover URLs`, `Full Scan`, `Check New Content`, `Retry Failed URLs`, `Resume Incomplete Scan`)
+- Deterministic URL classifier (`website_url_rules` + `classifier.py`) supporting `homepage`, `page`, `blog_index`, `blog_post`, `category`, `tag`, `archive`, `custom` + manual override pinning
+- Redesigned Universal Content Library (`/content-library` -> `/api/v1/contents`) with 7 live-count tabs, per-URL failure inspection/retry, and 5-tab Website Detail Workspace (`/websites/[id]`)
 
 ## Phase 3 — Gemini AI Engine *(Next)*
 - Official Google Gen AI SDK provider configuration as the **sole** AI generation provider (encrypted API keys, dynamic model listing & availability check)

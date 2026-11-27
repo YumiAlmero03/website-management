@@ -13,9 +13,9 @@ from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger
 from app.database import reset_engine
 from app.routers import (
-    articles,
     auth,
-    brands,
+    categories,
+    contents,
     dashboard,
     health,
     logs,
@@ -95,10 +95,10 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(dashboard.router, prefix=api_prefix)
     app.include_router(settings_router.router, prefix=api_prefix)
     app.include_router(logs.router, prefix=api_prefix)
-    app.include_router(brands.router, prefix=api_prefix)
+    app.include_router(categories.router, prefix=api_prefix)
     app.include_router(websites.router, prefix=api_prefix)
     app.include_router(scans.router, prefix=api_prefix)
-    app.include_router(articles.router, prefix=api_prefix)
+    app.include_router(contents.router, prefix=api_prefix)
     app.include_router(media.router, prefix=api_prefix)
 
     return app

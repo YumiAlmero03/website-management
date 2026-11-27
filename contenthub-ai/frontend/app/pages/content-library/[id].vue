@@ -1,383 +1,427 @@
 <script setup lang="ts">
-import { Archive, ArrowLeft, Copy, ExternalLink, RefreshCw, Sparkles } from 'lucide-vue-next'
-import type { ArticleDetail, ArticleRevision } from '~/types/api'
-import { extractErrorMessage, formatDateTime } from '~/utils/format'
+import { ArrowLeft, Ban, CheckCircle2, ExternalLink, RefreshCw, Sparkles } from 'lucide-vue-next'
+import type { ContentDetail, ContentRevision } from '~/types/api'
+import {
+  CONTENT_TYPE_OPTIONS,
+  extractErrorMessage,
+  formatDateTime,
+  getContentTypeMeta,
+} from '~/utils/format'
 
 const route = useRoute()
 const { request } = useApiClient()
 const toast = useToast()
 
-const articleId = computed(() => Number(route.params.id))
+const contentId = computed(() => Number(route.params.id))
 
-const article = ref<ArticleDetail | null>(null)
-const revisions = ref<ArticleRevision[]>([])
+const detail = ref<ContentDetail | null>(null)
+const revisions = ref<ContentRevision[]>([])
 const loading = ref(true)
-const reprocessing = ref(false)
-const archiving = ref(false)
 const errorMessage = ref<string | null>(null)
-const activeTab = ref<'markdown' | 'optimized' | 'compare' | 'original' | 'revisions'>('markdown')
+const reprocessing = ref(false)
+const savingClass = ref(false)
+const selectedType = ref('page')
+const activeTab = ref<'markdown' | 'extracted' | 'optimized' | 'structured' | 'html' | 'revisions'>('markdown')
 
-async function loadArticle() {
+async function loadContent() {
   loading.value = true
   errorMessage.value = null
   try {
-    const [detail, revList] = await Promise.all([
-      request<ArticleDetail>(`/api/v1/articles/${articleId.value}`),
-      request<ArticleRevision[]>(`/api/v1/articles/${articleId.value}/revisions`),
+    const [itemData, revData] = await Promise.all([
+      request<ContentDetail>(`/api/v1/contents/${contentId.value}`),
+      request<ContentRevision[]>(`/api/v1/contents/${contentId.value}/revisions`),
     ])
-    article.value = detail
-    revisions.value = revList
+    detail.value = itemData
+    revisions.value = revData
+    selectedType.value = itemData.content_type
   }
   catch (err) {
-    errorMessage.value = extractErrorMessage(err, 'Failed to load article details.')
+    errorMessage.value = extractErrorMessage(err, 'Failed to load content details.')
   }
   finally {
     loading.value = false
   }
 }
 
-async function copyText(label: string, text: string | null | undefined) {
-  if (!text) {
-    toast.add({ title: `No ${label} available to copy`, color: 'warning' })
+async function applyClassification() {
+  if (!detail.value || selectedType.value === detail.value.content_type) {
     return
   }
-  if (import.meta.client && navigator.clipboard) {
-    await navigator.clipboard.writeText(text)
-    toast.add({ title: `${label} copied to clipboard`, color: 'success' })
+  savingClass.value = true
+  try {
+    const updated = await request<ContentDetail>(`/api/v1/contents/${contentId.value}`, {
+      method: 'PATCH',
+      body: {
+        content_type: selectedType.value,
+        manual_classification_override: true,
+      },
+    })
+    detail.value = updated
+    toast.add({
+      title: 'Classification saved',
+      description: 'Pinned type will be preserved across future scans.',
+      color: 'success',
+    })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Classification failed',
+      description: extractErrorMessage(err, 'Could not update content classification.'),
+      color: 'error',
+    })
+  }
+  finally {
+    savingClass.value = false
   }
 }
 
-async function reprocessArticle() {
-  if (!article.value) {
+async function toggleExclude() {
+  if (!detail.value) {
     return
   }
-  reprocessing.value = true
+  savingClass.value = true
   try {
-    article.value = await request<ArticleDetail>(`/api/v1/articles/${article.value.id}/reprocess`, {
-      method: 'POST',
+    detail.value = await request<ContentDetail>(`/api/v1/contents/${contentId.value}`, {
+      method: 'PATCH',
+      body: { is_excluded: !detail.value.is_excluded },
     })
-    revisions.value = await request<ArticleRevision[]>(
-      `/api/v1/articles/${article.value.id}/revisions`,
-    )
-    toast.add({ title: 'Article re-extracted', color: 'success' })
+    toast.add({
+      title: detail.value.is_excluded ? 'URL excluded' : 'URL restored to Content Library',
+      color: 'success',
+    })
   }
   catch (err) {
-    toast.add({ title: 'Re-extraction failed', description: extractErrorMessage(err), color: 'error' })
+    toast.add({
+      title: 'Update failed',
+      description: extractErrorMessage(err, 'Could not update exclusion status.'),
+      color: 'error',
+    })
+  }
+  finally {
+    savingClass.value = false
+  }
+}
+
+async function reprocessNow() {
+  reprocessing.value = true
+  try {
+    const updated = await request<ContentDetail>(`/api/v1/contents/${contentId.value}/reprocess`, {
+      method: 'POST',
+    })
+    detail.value = updated
+    revisions.value = await request<ContentRevision[]>(`/api/v1/contents/${contentId.value}/revisions`)
+    toast.add({
+      title: updated.extraction_status === 'extracted' ? 'Content re-extracted' : 'Re-extraction reported failure',
+      description: updated.extraction_error || `${updated.word_count} words extracted.`,
+      color: updated.extraction_status === 'extracted' ? 'success' : 'warning',
+    })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Reprocess failed',
+      description: extractErrorMessage(err, 'Could not reprocess URL.'),
+      color: 'error',
+    })
   }
   finally {
     reprocessing.value = false
   }
 }
 
-async function toggleArchive() {
-  if (!article.value) {
-    return
-  }
-  archiving.value = true
-  const nextStatus = article.value.status === 'archived' ? 'optimized' : 'archived'
-  try {
-    article.value = await request<ArticleDetail>(`/api/v1/articles/${article.value.id}`, {
-      method: 'PATCH',
-      body: { status: nextStatus },
-    })
-    toast.add({
-      title: nextStatus === 'archived' ? 'Article archived' : 'Article restored',
-      color: 'success',
-    })
-  }
-  catch (err) {
-    toast.add({ title: 'Status update failed', description: extractErrorMessage(err), color: 'error' })
-  }
-  finally {
-    archiving.value = false
-  }
-}
-
 onMounted(() => {
-  void loadArticle()
+  void loadContent()
 })
 </script>
 
 <template>
   <div class="space-y-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <UButton
-        to="/content-library"
-        color="neutral"
-        variant="outline"
-        size="xs"
-      >
-        <ArrowLeft class="mr-1 h-3.5 w-3.5" />
-        Back to Content Library
-      </UButton>
+      <div class="flex items-center gap-3">
+        <UButton
+          to="/content-library"
+          color="neutral"
+          variant="outline"
+          size="xs"
+        >
+          <ArrowLeft class="mr-1 h-3.5 w-3.5" />
+          Back
+        </UButton>
+        <div>
+          <h1 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
+            {{ detail?.title || `Content #${contentId}` }}
+          </h1>
+          <a
+            v-if="detail"
+            :href="detail.canonical_url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex items-center gap-1 font-mono text-xs text-teal-600 hover:underline dark:text-teal-400"
+          >
+            {{ detail.canonical_url }}
+            <ExternalLink class="h-3 w-3" />
+          </a>
+        </div>
+      </div>
 
       <div
-        v-if="article"
+        v-if="detail"
         class="flex flex-wrap items-center gap-2"
       >
+        <div class="flex items-center gap-1.5">
+          <select
+            v-model="selectedType"
+            aria-label="Manual content classification"
+            class="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            <option
+              v-for="opt in CONTENT_TYPE_OPTIONS"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="outline"
+            :disabled="selectedType === detail.content_type || savingClass"
+            @click="applyClassification"
+          >
+            Pin Type
+          </UButton>
+        </div>
+
         <UButton
-          :to="article.canonical_url"
-          target="_blank"
-          rel="noopener noreferrer"
-          color="neutral"
-          variant="outline"
-          size="xs"
-        >
-          <ExternalLink class="mr-1 h-3.5 w-3.5" />
-          Open Original
-        </UButton>
-        <UButton
-          color="neutral"
-          variant="outline"
-          size="xs"
-          @click="copyText('Markdown', article.markdown_content)"
-        >
-          <Copy class="mr-1 h-3.5 w-3.5" />
-          Copy Markdown
-        </UButton>
-        <UButton
-          color="neutral"
-          variant="outline"
-          size="xs"
-          @click="copyText('Optimized Context', article.optimized_context)"
-        >
-          <Copy class="mr-1 h-3.5 w-3.5" />
-          Copy Optimized Context
-        </UButton>
-        <UButton
-          color="neutral"
-          variant="outline"
+          color="primary"
           size="xs"
           :loading="reprocessing"
-          @click="reprocessArticle"
+          @click="reprocessNow"
         >
-          <RefreshCw class="mr-1 h-3.5 w-3.5" />
-          Re-extract
+          <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
+          Re-extract Now
         </UButton>
+
         <UButton
-          color="neutral"
+          :color="detail.is_excluded ? 'success' : 'error'"
           variant="outline"
           size="xs"
-          :loading="archiving"
-          @click="toggleArchive"
+          :disabled="savingClass"
+          @click="toggleExclude"
         >
-          <Archive class="mr-1 h-3.5 w-3.5" />
-          {{ article.status === 'archived' ? 'Restore' : 'Archive' }}
+          <CheckCircle2
+            v-if="detail.is_excluded"
+            class="mr-1 h-3.5 w-3.5"
+          />
+          <Ban
+            v-else
+            class="mr-1 h-3.5 w-3.5"
+          />
+          {{ detail.is_excluded ? 'Restore URL' : 'Exclude URL' }}
         </UButton>
-        <UTooltip text="Gemini social post generation will be implemented in Phase 3">
-          <UButton
-            color="primary"
-            variant="soft"
-            size="xs"
-            disabled
-          >
-            <Sparkles class="mr-1 h-3.5 w-3.5" />
-            Generate Social Post (Phase 3)
-          </UButton>
-        </UTooltip>
       </div>
     </div>
 
     <AppErrorState
       v-if="errorMessage && !loading"
-      title="Article unavailable"
+      title="Could not inspect content"
       :message="errorMessage"
       retryable
-      @retry="loadArticle()"
+      @retry="loadContent()"
     />
 
     <USkeleton
-      v-if="loading"
-      class="h-72 w-full"
+      v-else-if="loading"
+      class="h-64 w-full"
     />
 
-    <template v-else-if="article">
-      <!-- Metadata Overview -->
-      <div class="rounded-lg border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div class="space-y-2">
-            <div class="flex flex-wrap items-center gap-2">
-              <HealthStatusBadge
-                :status="article.status === 'optimized' || article.status === 'extracted' ? 'ok' : article.status"
-                :label="article.status"
-              />
-              <UBadge
-                v-if="article.is_historical_baseline"
-                color="neutral"
-                variant="subtle"
-                size="sm"
-              >
-                Baseline Import
-              </UBadge>
-              <UBadge
-                v-if="article.near_duplicate_of_id"
-                color="warning"
-                variant="subtle"
-                size="sm"
-              >
-                Near-duplicate of #{{ article.near_duplicate_of_id }} ({{ article.near_duplicate_score }}%)
-              </UBadge>
-            </div>
-            <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100">
-              {{ article.title }}
-            </h1>
-            <p
-              v-if="article.meta_description"
-              class="text-sm text-slate-600 dark:text-slate-300"
-            >
-              {{ article.meta_description }}
-            </p>
-            <p class="break-all font-mono text-xs text-slate-500">
-              {{ article.canonical_url }}
-            </p>
-          </div>
-
-          <img
-            v-if="article.featured_image_url"
-            :src="article.featured_image_url"
-            :alt="article.featured_media?.alt_text || article.title"
-            class="h-28 w-44 shrink-0 rounded-md border border-slate-200 object-cover dark:border-slate-700"
-          >
+    <template v-else-if="detail">
+      <!-- Extraction failure alert if present -->
+      <div
+        v-if="detail.extraction_status === 'failed'"
+        class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200"
+      >
+        <div>
+          <p class="font-semibold">
+            Extraction Failed {{ detail.http_status ? `(HTTP ${detail.http_status})` : '' }}
+          </p>
+          <p class="mt-0.5">{{ detail.extraction_error || 'The URL failed during fetch or parsing.' }}</p>
         </div>
-
-        <dl class="mt-5 grid grid-cols-2 gap-4 border-t border-slate-100 pt-4 text-xs sm:grid-cols-4 dark:border-slate-800">
-          <div>
-            <dt class="text-slate-400">Brand / Website</dt>
-            <dd class="mt-0.5 font-medium">{{ article.brand_name || '-' }} · {{ article.website_name || '-' }}</dd>
-          </div>
-          <div>
-            <dt class="text-slate-400">Author / Language</dt>
-            <dd class="mt-0.5 font-medium">{{ article.author || 'Unknown' }} · {{ article.language || '-' }}</dd>
-          </div>
-          <div>
-            <dt class="text-slate-400">Word Count / Revisions</dt>
-            <dd class="mt-0.5 font-medium">{{ article.word_count }} words · {{ article.revision_count }} revision(s)</dd>
-          </div>
-          <div>
-            <dt class="text-slate-400">Published / Discovered</dt>
-            <dd class="mt-0.5 font-medium">
-              {{ formatDateTime(article.published_at) }}<br>{{ formatDateTime(article.discovered_at) }}
-            </dd>
-          </div>
-        </dl>
-
-        <div class="mt-4 flex flex-wrap gap-1.5">
-          <UBadge
-            v-for="kw in article.keywords"
-            :key="kw"
-            color="primary"
-            variant="subtle"
-            size="sm"
-          >
-            {{ kw }}
-          </UBadge>
-          <UBadge
-            v-for="cat in article.categories"
-            :key="`cat-${cat}`"
-            color="neutral"
-            variant="outline"
-            size="sm"
-          >
-            {{ cat }}
-          </UBadge>
-        </div>
-
-        <p class="mt-3 font-mono text-[11px] text-slate-400">
-          URL SHA-256: {{ article.url_hash.slice(0, 16) }}… · Content SHA-256: {{ article.content_hash.slice(0, 16) }}…
-        </p>
-      </div>
-
-      <!-- Content Tabs -->
-      <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2 dark:border-slate-800">
         <UButton
-          v-for="tab in [
-            { id: 'markdown', label: 'Clean Markdown' },
-            { id: 'optimized', label: 'Optimized Context (Token Prep)' },
-            { id: 'compare', label: 'Side-by-Side Comparison' },
-            { id: 'original', label: 'Sanitized Original Content' },
-            { id: 'revisions', label: `Revision History (${revisions.length})` },
-          ] as const"
-          :key="tab.id"
-          :color="activeTab === tab.id ? 'primary' : 'neutral'"
-          :variant="activeTab === tab.id ? 'solid' : 'ghost'"
           size="xs"
-          @click="activeTab = tab.id"
+          color="error"
+          :loading="reprocessing"
+          @click="reprocessNow"
         >
-          {{ tab.label }}
+          Retry Extraction
         </UButton>
       </div>
 
-      <!-- Clean Markdown -->
-      <div
-        v-if="activeTab === 'markdown'"
-        class="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <pre class="max-h-[36rem] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-800 dark:text-slate-200">{{ article.markdown_content || 'No Markdown content extracted.' }}</pre>
-      </div>
-
-      <!-- Optimized Context -->
-      <div
-        v-else-if="activeTab === 'optimized'"
-        class="space-y-3 rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <p class="text-xs text-slate-500 dark:text-slate-400">
-          Prepared natively in Python (YAKE keywords + extractive sentence selection, zero AI calls). Length:
-          <strong>{{ (article.optimized_context || '').length }}</strong> chars vs Markdown
-          <strong>{{ (article.markdown_content || '').length }}</strong> chars.
-        </p>
-        <pre class="max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-4 font-mono text-xs leading-relaxed text-slate-800 dark:bg-slate-950 dark:text-slate-200">{{ article.optimized_context || 'No optimized context available.' }}</pre>
-      </div>
-
-      <!-- Side-by-Side Comparison -->
-      <div
-        v-else-if="activeTab === 'compare'"
-        class="grid grid-cols-1 gap-4 lg:grid-cols-2"
-      >
-        <div class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <h2 class="mb-2 text-xs font-semibold text-slate-700 uppercase dark:text-slate-300">
-            Clean Markdown ({{ (article.markdown_content || '').length }} chars)
-          </h2>
-          <pre class="max-h-[32rem] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-700 dark:text-slate-300">{{ article.markdown_content || '-' }}</pre>
-        </div>
-        <div class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <h2 class="mb-2 text-xs font-semibold text-teal-700 uppercase dark:text-teal-300">
-            Optimized Context ({{ (article.optimized_context || '').length }} chars)
-          </h2>
-          <pre class="max-h-[32rem] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-700 dark:text-slate-300">{{ article.optimized_context || '-' }}</pre>
-        </div>
-      </div>
-
-      <!-- Sanitized Original (escaped text display — prevents XSS) -->
-      <div
-        v-else-if="activeTab === 'original'"
-        class="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <p class="mb-2 text-xs text-slate-500">
-          Displayed as escaped sanitized HTML source for reference and validation (never executed).
-        </p>
-        <pre class="max-h-[36rem] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-700 dark:text-slate-300">{{ article.original_content || 'No original content stored.' }}</pre>
-      </div>
-
-      <!-- Revisions -->
-      <div
-        v-else-if="activeTab === 'revisions'"
-        class="space-y-3 rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <AppEmptyState
-          v-if="revisions.length === 0"
-          title="No prior revisions yet"
-          description="Previous snapshots are automatically preserved here whenever an article's SHA-256 content hash changes on rescan."
-        />
-        <div
-          v-for="rev in revisions"
-          :key="rev.id"
-          class="rounded-md border border-slate-200 p-4 dark:border-slate-800"
-        >
-          <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span class="font-semibold">Revision #{{ rev.revision_number }} — {{ rev.title }}</span>
-            <span class="font-mono text-slate-500">{{ formatDateTime(rev.created_at) }} · {{ rev.content_hash.slice(0, 12) }}</span>
+      <!-- Summary cards -->
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
+          <p class="font-semibold text-slate-900 dark:text-slate-100">Classification & Provenance</p>
+          <div class="mt-3 space-y-2">
+            <div class="flex justify-between">
+              <span class="text-slate-500">Type:</span>
+              <UBadge
+                :color="getContentTypeMeta(detail.content_type).color"
+                variant="subtle"
+                size="xs"
+              >
+                {{ getContentTypeMeta(detail.content_type).label }}
+              </UBadge>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Classifier:</span>
+              <span>{{ detail.classification_method }}{{ detail.manual_classification_override ? ' (pinned)' : '' }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Sources:</span>
+              <span class="font-mono">{{ detail.discovery_sources.join(', ') || '—' }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Website:</span>
+              <NuxtLink
+                :to="`/websites/${detail.website_id}`"
+                class="font-medium text-teal-600 hover:underline dark:text-teal-400"
+              >
+                {{ detail.website_name }}
+              </NuxtLink>
+            </div>
           </div>
-          <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-3 font-mono text-[11px] text-slate-700 dark:bg-slate-950 dark:text-slate-300">{{ rev.markdown_content || '-' }}</pre>
+        </div>
+
+        <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
+          <p class="font-semibold text-slate-900 dark:text-slate-100">Extraction & Integrity</p>
+          <div class="mt-3 space-y-2">
+            <div class="flex justify-between">
+              <span class="text-slate-500">Extraction:</span>
+              <HealthStatusBadge
+                :status="detail.extraction_status === 'extracted' ? 'ok' : detail.extraction_status === 'pending' ? 'warning' : 'error'"
+                :label="detail.extraction_status"
+              />
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">HTTP Status / Words:</span>
+              <span class="font-mono">{{ detail.http_status ?? '—' }} · {{ detail.word_count }} words</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Language:</span>
+              <span>{{ detail.language || '—' }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Last Checked:</span>
+              <span>{{ formatDateTime(detail.last_checked_at) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
+          <p class="font-semibold text-slate-900 dark:text-slate-100">Keywords & Metadata</p>
+          <p class="mt-2 line-clamp-2 text-slate-600 dark:text-slate-300">
+            {{ detail.meta_description || 'No meta description found.' }}
+          </p>
+          <div class="mt-3 flex flex-wrap gap-1">
+            <UBadge
+              v-for="kw in detail.keywords.slice(0, 8)"
+              :key="kw"
+              color="neutral"
+              variant="subtle"
+              size="xs"
+            >
+              {{ kw }}
+            </UBadge>
+            <span
+              v-if="detail.keywords.length === 0"
+              class="text-slate-400"
+            >
+              No keywords extracted yet
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Content Viewer Tabs -->
+      <div class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <div class="flex flex-wrap gap-1 border-b border-slate-200 px-4 pt-3 dark:border-slate-800">
+          <button
+            v-for="t in [
+              { id: 'markdown', label: 'Markdown Body' },
+              { id: 'optimized', label: 'AI Optimized Context' },
+              { id: 'extracted', label: 'Extracted Text' },
+              { id: 'structured', label: 'Structured Metadata JSON' },
+              { id: 'html', label: 'Sanitized HTML' },
+              { id: 'revisions', label: `Revisions (${revisions.length})` },
+            ]"
+            :key="t.id"
+            type="button"
+            :class="[
+              'border-b-2 px-3 py-2 text-xs font-medium transition-colors',
+              activeTab === t.id
+                ? 'border-teal-600 text-teal-700 dark:text-teal-300'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
+            ]"
+            @click="activeTab = t.id as typeof activeTab"
+          >
+            {{ t.label }}
+          </button>
+        </div>
+
+        <div class="p-4 text-xs">
+          <pre
+            v-if="activeTab === 'markdown'"
+            class="max-h-[34rem] overflow-auto whitespace-pre-wrap font-mono text-slate-800 dark:text-slate-200"
+          >{{ detail.markdown_content || 'No Markdown extracted yet.' }}</pre>
+
+          <div
+            v-else-if="activeTab === 'optimized'"
+            class="space-y-2"
+          >
+            <p class="flex items-center gap-1.5 text-[11px] text-teal-600 dark:text-teal-400">
+              <Sparkles class="h-3.5 w-3.5" />
+              Token-saving compacted context generated locally without AI calls:
+            </p>
+            <pre class="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-3 font-mono text-slate-800 dark:bg-slate-950 dark:text-slate-200">{{ detail.optimized_context || 'Not generated yet.' }}</pre>
+          </div>
+
+          <pre
+            v-else-if="activeTab === 'extracted'"
+            class="max-h-[34rem] overflow-auto whitespace-pre-wrap font-mono text-slate-700 dark:text-slate-300"
+          >{{ detail.extracted_content || detail.markdown_content || 'No extracted text.' }}</pre>
+
+          <pre
+            v-else-if="activeTab === 'structured'"
+            class="max-h-[34rem] overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-3 font-mono text-slate-700 dark:bg-slate-950 dark:text-slate-300"
+          >{{ JSON.stringify(detail.structured_data_json || {}, null, 2) }}</pre>
+
+          <pre
+            v-else-if="activeTab === 'html'"
+            class="max-h-[34rem] overflow-auto whitespace-pre-wrap font-mono text-slate-700 dark:text-slate-300"
+          >{{ detail.original_content || 'No HTML stored.' }}</pre>
+
+          <div
+            v-else
+            class="space-y-3"
+          >
+            <p
+              v-if="revisions.length === 0"
+              class="text-slate-500"
+            >
+              No previous content revisions recorded yet.
+            </p>
+            <div
+              v-for="rev in revisions"
+              :key="rev.id"
+              class="rounded-md border border-slate-200 p-3 dark:border-slate-800"
+            >
+              <div class="flex items-center justify-between">
+                <span class="font-semibold">Revision #{{ rev.revision_number }} · {{ rev.title }}</span>
+                <span class="text-slate-400">{{ formatDateTime(rev.created_at) }}</span>
+              </div>
+              <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-600 dark:text-slate-300">{{ rev.markdown_content }}</pre>
+            </div>
+          </div>
         </div>
       </div>
     </template>

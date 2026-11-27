@@ -11,15 +11,15 @@ from app.models.base import MYSQL_TABLE_ARGS, Base, utc_now_naive
 class MediaAsset(Base):
     __tablename__ = "media_assets"
     __table_args__ = (
-        Index("ix_media_assets_brand_id", "brand_id"),
+        Index("ix_media_assets_website_id", "website_id"),
         Index("ix_media_assets_checksum", "checksum"),
         MYSQL_TABLE_ARGS,
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    brand_id: Mapped[int | None] = mapped_column(
+    website_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("brands.id", name="fk_media_assets_brand_id_brands", ondelete="SET NULL"),
+        ForeignKey("websites.id", name="fk_media_assets_website_id_websites", ondelete="SET NULL"),
         nullable=True,
     )
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)

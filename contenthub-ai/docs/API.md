@@ -4,7 +4,7 @@
 
 - **Base Path:** `/api/v1`
 - **Format:** JSON (`application/json`), UTF-8.
-- **Timestamps:** ISO 8601 UTC (`2026-11-26T10:30:00Z`).
+- **Timestamps:** ISO 8601 UTC (`2026-11-27T10:30:00Z`).
 - **Authentication:** Server-side HTTP-only session cookie (`contenthub_session` by default).
 - **CSRF Protection:** All mutating authenticated requests (`POST`, `PUT`, `PATCH`, `DELETE`) require the `X-CSRF-Token` header matching the active session's `csrf_token` returned by `/api/v1/auth/login` or `/api/v1/auth/me`.
 - **Public Registration:** Permanently disabled (`404 Not Found` — no registration route exists).
@@ -23,95 +23,93 @@
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/health` | Public | No | Lightweight liveness check (`status`, `app_name`, `version`, `environment`, `timestamp`). Does not expose DB credentials or host metrics. |
-| `GET` | `/api/v1/health/db` | Admin | No | Live MySQL connectivity check, server version, InnoDB/`utf8mb4` verification, round-trip latency, and connection pool configuration. |
-| `GET` | `/api/v1/health/system` | Admin | No | Combined application health, MySQL diagnostics, `psutil` CPU/RAM/Load/Disk metrics, Resource Guardian status (`normal`/`warning`/`critical`), and storage path writability. |
+| `GET` | `/api/v1/health` | Public | No | Lightweight liveness check (`status`, `app_name`, `version`, `environment`, `timestamp`). |
+| `GET` | `/api/v1/health/db` | Admin | No | Live MySQL connectivity check, server version, InnoDB/`utf8mb4` verification, latency, and pool settings. |
+| `GET` | `/api/v1/health/system` | Admin | No | Application health, MySQL diagnostics, `psutil` CPU/RAM/Load/Disk metrics, Resource Guardian status, and storage writability. |
 
 ### Administrator Authentication
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/auth/status` | Public | No | Returns `{ "admin_initialized": bool, "authenticated": bool, "app_name": str }` so the login UI can show CLI initialization guidance before the first admin exists without revealing credentials. |
-| `POST` | `/api/v1/auth/login` | Public (Rate-limited) | No | Validates email + password against Argon2id hash, creates hashed MySQL session, sets `HttpOnly` session cookie, returns `{ "user", "csrf_token", "expires_at" }`. |
-| `GET` | `/api/v1/auth/me` | Admin | No | Returns current authenticated administrator, active session `csrf_token`, and `expires_at`. |
-| `POST` | `/api/v1/auth/logout` | Admin | **Yes** | Revokes server-side session in MySQL, clears session cookie, records audit event. |
+| `GET` | `/api/v1/auth/status` | Public | No | Returns `{ "admin_initialized": bool, "authenticated": bool, "app_name": str }`. |
+| `POST` | `/api/v1/auth/login` | Public (Rate-limited) | No | Validates Argon2id credentials, creates hashed MySQL session, sets `HttpOnly` cookie, returns `{ "user", "csrf_token", "expires_at" }`. |
+| `GET` | `/api/v1/auth/me` | Admin | No | Returns current administrator, `csrf_token`, and session expiry. |
+| `POST` | `/api/v1/auth/logout` | Admin | **Yes** | Revokes server-side session in MySQL, clears cookie, logs audit event. |
 
 ### Dashboard
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/dashboard/summary` | Admin | No | Optional query params: `brand_id`, `website_id`. Returns real Phase 1 + Phase 2 counts (brands, monitored websites, indexed articles, active/failed scans, articles updated in 24h, active sessions, settings, activity logs), recent scans, live database & server resource health, recent activity logs, and explicit `not_implemented` readiness descriptors for Phases 3–6. |
+| `GET` | `/api/v1/dashboard/summary` | Admin | No | Optional query params: `website_id`, `category_id`. Returns Phase 1 + Phase 2.1 counts (active websites, categories, total/extracted contents, homepage/page/blog_index/blog_post/other breakdown, failed/pending counts, completed/failed/incomplete scans), recent scans, infrastructure health, and explicit Phase 3–6 `not_implemented` modules. |
 
-### Application Settings
-
-| Method | Path | Auth | CSRF | Description |
-|---|---|---|---|---|
-| `GET` | `/api/v1/settings` | Admin | No | Returns all configurable application settings grouped by category (`general`, `publishing`, `resource_guardian`, `seo`, `backups`), masking secret values (`has_value` flag only). |
-| `PUT` | `/api/v1/settings` | Admin | **Yes** | Validates and upserts setting updates, encrypting secret entries via Fernet, and writes a redacted audit entry to `activity_logs`. |
-
-### Activity Logs
+### Application Settings & Activity Logs
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/logs/activity` | Admin | No | Paginated (`page`, `page_size`), filterable (`category`, `level`, `search`) listing of redacted `activity_logs` ordered newest-first. |
+| `GET` | `/api/v1/settings` | Admin | No | Returns configurable settings grouped by category (`general`, `publishing`, `resource_guardian`, `seo`, `backups`), masking secrets (`has_value`). |
+| `PUT` | `/api/v1/settings` | Admin | **Yes** | Validates and updates settings, Fernet-encrypts secrets, writes redacted audit event. |
+| `GET` | `/api/v1/logs/activity` | Admin | No | Paginated (`page`, `page_size`), filterable (`category`, `level`, `search`) redacted audit log listing. |
 
-## 3. Phase 2 Endpoints — Website Monitoring, Content Library & Media
+## 3. Phase 2.1 Endpoints — Website-Centric Monitoring, Categories, Scanner & Content Library
 
-All Phase 2 endpoints require an authenticated administrator session (`401` otherwise). All mutating endpoints (`POST`, `PATCH`, `DELETE`) additionally enforce `X-CSRF-Token` validation (`403` otherwise).
+All Phase 2.1 endpoints require an authenticated administrator session (`401` otherwise). All mutating endpoints enforce `X-CSRF-Token` validation (`403` otherwise). Legacy `/api/v1/brands` and `/api/v1/articles` namespaces have been removed cleanly in favor of website-centric `/websites` and `/contents`.
 
-### Brand Management
-
-| Method | Path | Auth | CSRF | Description |
-|---|---|---|---|---|
-| `GET` | `/api/v1/brands` | Admin | No | Paginated (`page`, `page_size`), filterable (`search`, `is_active`, `language`) list of brands with website and article counts. |
-| `POST` | `/api/v1/brands` | Admin | **Yes** | Create a brand with language profile (English, Filipino, Taglish, pt-BR, etc.), target audience, tone, keywords, hashtags, CTA, writing guidelines, and AI instructions. Auto-generates unique slug when omitted. |
-| `GET` | `/api/v1/brands/{brand_id}` | Admin | No | Retrieve full brand details and counts. |
-| `PATCH` | `/api/v1/brands/{brand_id}` | Admin | **Yes** | Partial update of brand metadata, status, or guidelines. |
-| `DELETE` | `/api/v1/brands/{brand_id}` | Admin | **Yes** | Delete brand. Blocked with `409 Conflict` while associated websites exist (`ON DELETE RESTRICT`); deactivate via `PATCH` (`is_active: false`) instead. |
-| `POST` | `/api/v1/brands/{brand_id}/logo` | Admin | **Yes** | Multipart upload (`file`) for brand logo. Validated via Pillow (magic bytes, dimensions, size limit), stored under `STORAGE_ROOT/images/`, deduplicated by SHA-256, and linked to `media_assets` + `brands.logo_url`. |
-
-### Website Management & Discovery
+### Custom Website Categories (Managed under Settings)
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/websites` | Admin | No | Paginated (`page`, `page_size`), filterable (`brand_id`, `status`, `website_type`, `search`) list of websites with brand info, article counts, and latest scan status. |
-| `POST` | `/api/v1/websites` | Admin | **Yes** | Register a website under a brand. Validates SSRF-safe domain/URLs, `website_type` (`wordpress`, `nuxt`, `nextjs`, `custom_php`, `static_html`, `other_cms`, `custom_rest_api`), `discovery_method` (`auto`, `rest_api`, `wordpress`, `rss`, `sitemap`, `llms_txt`, `html`, `playwright`), `baseline_mode` (`import_existing`, `after_date`, `latest_n`, `new_only`), include/exclude URL glob patterns, and scan schedule. |
-| `GET` | `/api/v1/websites/{website_id}` | Admin | No | Retrieve website configuration, article count, and schedule timestamps. |
-| `PATCH` | `/api/v1/websites/{website_id}` | Admin | **Yes** | Partial update of website settings, URL patterns, endpoints, baseline settings, auto-scan flag, or schedule interval. |
-| `DELETE` | `/api/v1/websites/{website_id}` | Admin | **Yes** | Delete a website. Blocked with `409 Conflict` while associated `source_articles` exist (`ON DELETE RESTRICT`); archive via `PATCH` (`status: "archived"`) instead. |
-| `POST` | `/api/v1/websites/{website_id}/test` | Admin | **Yes** | SSRF-hardened connectivity test probing domain reachability, HTTP status, final URL, page title, and detected website type. |
-| `POST` | `/api/v1/websites/{website_id}/discover` | Admin | **Yes** | Non-destructive source auto-discovery inspecting HTML `<link>` tags, `robots.txt`, `/wp-json/wp/v2/posts`, common RSS/sitemap paths, and `/llms.txt`. Pass query parameter `?apply=true` to persist discovered endpoints. |
+| `GET` | `/api/v1/website-categories` | Admin | No | Lists administrator-defined categories (`include_archived=false` by default) with live `website_count` totals. |
+| `POST` | `/api/v1/website-categories` | Admin | **Yes** | Create a custom website category (`name`, optional `slug`, `description`, `sort_order`). |
+| `GET` | `/api/v1/website-categories/{category_id}` | Admin | No | Retrieve single category details. |
+| `PATCH` | `/api/v1/website-categories/{category_id}` | Admin | **Yes** | Rename, edit description/sort order, or archive/restore (`is_archived`). |
+| `DELETE` | `/api/v1/website-categories/{category_id}` | Admin | **Yes** | Delete an unused category (`409 Conflict` if websites are still assigned). |
 
-### Website Scans & Scan History
+### Website Management, Merged Brand Profile, Sources & URL Rules
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `POST` | `/api/v1/websites/{website_id}/scan` | Admin | **Yes** | Non-blocking scan trigger (`202 Accepted`). Enforces single active scan per website (`409 Conflict` if already `pending` or `processing`), inserts a durable `website_scan_logs` row (`status=pending`), and spawns detached worker `python -m app.cli run-scan --scan-id <id>`. |
-| `GET` | `/api/v1/websites/{website_id}/scan-logs` | Admin | No | Paginated (`page`, `page_size`) scan history for a website ordered newest-first. |
-| `GET` | `/api/v1/scans/{scan_id}` | Admin | No | Live scan progress and status (`pending`, `processing`, `completed`, `partially_completed`, `failed`, `cancelled`) including `urls_found`, `articles_processed`, `new_articles`, `updated_articles`, `unchanged_articles`, `skipped_articles`, `failed_articles`, `duration_ms`, and `error_message`. |
-| `POST` | `/api/v1/scans/{scan_id}/retry` | Admin | **Yes** | Re-queues a `failed` or `partially_completed` scan as a new durable `website_scan_logs` execution (`202 Accepted`) if no scan is currently active for that website. |
+| `GET` | `/api/v1/websites` | Admin | No | Paginated (`page`, `page_size`), filterable (`category_id`, `status`, `website_type`, `search`) list with merged brand profile & live content breakdown counts. |
+| `POST` | `/api/v1/websites` | Admin | **Yes** | Register website directly without pre-creating a brand. Accepts full URL or bare domain, SSRF-validates, assigns optional `category_id`, and stores merged brand/language/SEO/crawl configuration (`crawl_batch_size`, `crawl_max_urls_per_run`, `single_source_only`). |
+| `GET` | `/api/v1/websites/{website_id}` | Admin | No | Full website details, brand guidelines, schedule state, and content breakdown counts. |
+| `PATCH` | `/api/v1/websites/{website_id}` | Admin | **Yes** | Partial update of website metadata, category assignment, brand guidelines, endpoints, crawl limits, or status. |
+| `DELETE` | `/api/v1/websites/{website_id}` | Admin | **Yes** | Delete website (`409 Conflict` while discovered `website_contents` exist; set `status="archived"` instead). |
+| `POST` | `/api/v1/websites/{website_id}/logo` | Admin | **Yes** | Multipart upload (`file`) for the website's brand logo (Pillow-validated, stored under `STORAGE_ROOT/images/`, saved as `website.logo_url`). |
+| `POST` | `/api/v1/websites/{website_id}/test` | Admin | **Yes** | SSRF-hardened connectivity test returning HTTP status, final URL, page title, and detected CMS/framework (`website_type`). |
+| `POST` | `/api/v1/websites/{website_id}/discover` | Admin | **Yes** | Multi-source auto-discovery across homepage links, `robots.txt` Sitemaps, RSS/Atom feeds, WordPress REST API, and `/llms.txt`. Pass `?apply=true` to persist discovered endpoints into `websites` & `website_discovery_sources`. |
+| `GET` | `/api/v1/websites/{website_id}/sources` | Admin | No | Lists tracked discovery endpoints (`website_discovery_sources`) with per-endpoint ETag, Last-Modified, HTTP status, `last_urls_found`, and errors. |
+| `PATCH` | `/api/v1/websites/{website_id}/sources/{source_id}` | Admin | **Yes** | Enable or disable an individual discovery endpoint (`is_enabled`). |
+| `GET` | `/api/v1/websites/{website_id}/rules` | Admin | No | Lists website-specific URL classification/exclusion rules (`website_url_rules`). |
+| `POST` | `/api/v1/websites/{website_id}/rules` | Admin | **Yes** | Add a custom URL classification rule (`pattern`, `match_mode` = `glob`/`prefix`/`exact`/`regex`, `target_content_type`, `priority`, `notes`). |
+| `PATCH` | `/api/v1/websites/{website_id}/rules/{rule_id}` | Admin | **Yes** | Update an existing URL classification rule. |
+| `DELETE` | `/api/v1/websites/{website_id}/rules/{rule_id}` | Admin | **Yes** | Delete a URL classification rule. |
 
-### Content Library & Article Revisions
+### Website Scans & URL-Level Diagnostics
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/articles` | Admin | No | Server-side paginated (`page`, `page_size`), filterable (`brand_id`, `website_id`, `language`, `category`, `status`, `date_from`, `date_to`, `search`, `change_filter`) listing of extracted `source_articles`. |
-| `GET` | `/api/v1/articles/{article_id}` | Admin | No | Full article detail including `original_content` (XSS-sanitized), `markdown_content`, `optimized_context`, YAKE `keywords`, `categories`, `tags`, `word_count`, `url_hash`, `content_hash`, advisory near-duplicate link/score, featured media summary, and `revision_count`. |
-| `GET` | `/api/v1/articles/{article_id}/revisions` | Admin | No | Chronological revision history (`source_article_revisions`) showing prior snapshots whenever `content_hash` changed across rescans. |
-| `POST` | `/api/v1/articles/{article_id}/reprocess` | Admin | **Yes** | Re-fetches (SSRF-validated) and re-extracts the article's canonical URL using Trafilatura/BeautifulSoup, updating content/markdown/context/keywords and creating a new revision snapshot if `content_hash` changed. |
-| `PATCH` | `/api/v1/articles/{article_id}` | Admin | **Yes** | Update article status (`discovered`, `extracted`, `optimized`, `updated`, `archived`, `error`), `categories`, `tags`, or `language`. |
+| `POST` | `/api/v1/websites/{website_id}/scan` | Admin | **Yes** | Enqueue non-blocking scan (`202 Accepted`). Optional JSON body `{ "scan_mode": "full" | "incremental" | "resume" | "retry_failed" | "discover_only", "max_urls", "batch_size" }`. |
+| `GET` | `/api/v1/websites/{website_id}/scan-logs` | Admin | No | Paginated scan history with per-type counts (`homepage_count`, `page_count`, `blog_post_count`, `other_count`), `urls_pending_extraction`, `discovered_sitemaps`, and source completion/failure logs. |
+| `GET` | `/api/v1/scans/{scan_id}` | Admin | No | Live scan progress (`status`: `pending`, `processing`, `completed`, `partially_completed`, `incomplete`, `paused`, `failed`, `cancelled`, plus `current_source` / `current_url`). |
+| `GET` | `/api/v1/scans/{scan_id}/items` | Admin | No | Paginated per-URL discovery/extraction diagnostics (`status`, `failures_only=true`) showing exact HTTP status, failure reason, and error detail. |
+| `POST` | `/api/v1/scans/{scan_id}/retry` | Admin | **Yes** | Enqueue a `resume` (when pending URLs remain) or `retry_failed` scan (`202 Accepted`). |
 
-### Media Assets
+### Universal Content Library & Media Assets
 
 | Method | Path | Auth | CSRF | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/media` | Admin | No | Paginated (`page`, `page_size`), filterable (`brand_id`) listing of `media_assets`. |
-| `GET` | `/api/v1/media/{media_id}` | Admin | No | Metadata details for a single media asset (`file_name`, `file_path`, `source_url`, `mime_type`, `file_size`, `width`, `height`, `alt_text`, `checksum`). |
-| `GET` | `/api/v1/media/{media_id}/file` | Admin | No | Streams locally stored image asset (`file_path`) with validated `Content-Type`, global `X-Content-Type-Options: nosniff` header, and strict path-traversal confinement within `STORAGE_ROOT`. Returns `404` for `url_only` assets without a local file. |
+| `GET` | `/api/v1/contents/stats` | Admin | No | Live database tab counts (`total_discovered`, `homepage_count`, `page_count`, `blog_post_count`, `blog_index_count`, `other_count`, `pending_count`, `failed_count`, `updated_count`, `excluded_count`) filterable by `website_id` and `category_id`. |
+| `GET` | `/api/v1/contents` | Admin | No | Paginated (`page`, `page_size`), filterable (`website_id`, `category_id`, `tab`, `content_type`, `extraction_status`, `language`, `tag_or_category`, `status`, `change_filter`, `search`, `include_excluded`, `sort_by`, `sort_dir`) listing of `website_contents` alongside live `stats`. |
+| `GET` | `/api/v1/contents/{content_id}` | Admin | No | Full content record (`original_content`, `extracted_content`, `markdown_content`, `optimized_context`, `structured_data_json`, `classification_method`, `manual_classification_override`, `http_status`, `extraction_error`, hashes, media, revisions). |
+| `PATCH` | `/api/v1/contents/{content_id}` | Admin | **Yes** | Manually reclassify `content_type` (sets `manual_classification_override=true` so scans never overwrite it), toggle `is_excluded`, update status, tags, categories, or language. |
+| `POST` | `/api/v1/contents/{content_id}/reprocess` | Admin | **Yes** | SSRF-validated single-URL re-fetch and content-type-aware extraction, preserving `manual_classification_override`, updating failure status or creating a `content_revisions` snapshot on changes. |
+| `GET` | `/api/v1/contents/{content_id}/revisions` | Admin | No | Chronological revision history (`content_revisions`) whenever extracted `content_hash` changes. |
+| `GET` | `/api/v1/media` | Admin | No | Paginated (`page`, `page_size`), filterable by `website_id` listing of `media_assets`. |
+| `GET` | `/api/v1/media/{media_id}` | Admin | No | Single media asset metadata. |
+| `GET` | `/api/v1/media/{media_id}/file` | Admin | No | Streams locally stored image asset with validated `Content-Type` and strict path confinement. |
 
 ## 4. Planned Future API Namespaces (Phases 3–6)
 
-- Phase 3: `/api/v1/ai/providers`, `/api/v1/ai/prompts`, `/api/v1/ai/usage`, `/api/v1/ai/generate` (Google Gemini API as the sole AI generation provider)
+- Phase 3: `/api/v1/ai/providers`, `/api/v1/ai/prompts`, `/api/v1/ai/usage`, `/api/v1/ai/generate` (Google Gemini API as sole AI generation provider)
 - Phase 4: `/api/v1/accounts`, `/api/v1/social-posts`, `/api/v1/calendar`
 - Phase 5: `/api/v1/editorial/keywords`, `/api/v1/editorial/topics`, `/api/v1/editorial/plans`, `/api/v1/editorial/articles`
 - Phase 6: `/api/v1/automation/jobs`, `/api/v1/automation/rules`, `/api/v1/analytics`, `/api/v1/backups`
