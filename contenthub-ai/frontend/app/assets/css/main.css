@@ -1,0 +1,28 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+:root {
+  --ch-surface: #f8fafc;
+  --ch-panel: #ffffff;
+  --ch-border: #e2e8f0;
+  --ch-ink: #0f172a;
+  --ch-muted: #64748b;
+  --ch-accent: #0f766e;
+}
+
+.dark {
+  --ch-surface: #090d16;
+  --ch-panel: #111827;
+  --ch-border: #1e293b;
+  --ch-ink: #f1f5f9;
+  --ch-muted: #94a3b8;
+  --ch-accent: #14b8a6;
+}
+
+html,
+body {
+  background-color: var(--ch-surface);
+  color: var(--ch-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

@@ -1,0 +1,36 @@
+# ContentHub AI — Backend Dependencies (Python 3.12)
+# Approved Phase 1 + Phase 2 stack only.
+# Prohibited packages (never install): SQLite, Redis, Celery, Ollama, LangChain, paid APIs.
+
+# Phase 1 — Core API, Auth, MySQL, Monitoring
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+pydantic==2.11.3
+pydantic-settings==2.8.1
+SQLAlchemy==2.0.40
+PyMySQL==1.1.1
+cryptography==44.0.2
+alembic==1.15.2
+httpx==0.28.1
+Jinja2==3.1.6
+argon2-cffi==23.1.0
+psutil==7.0.0
+python-multipart==0.0.20
+
+# Phase 2 — Website Monitoring, Extraction, Deduplication & Media
+trafilatura==2.0.0
+beautifulsoup4==4.13.4
+lxml==5.4.0
+feedparser==6.0.11
+defusedxml==0.7.1
+markdownify==1.1.0
+yake==0.4.8
+rapidfuzz==3.13.0
+Pillow==11.2.1
+
+# Optional Phase 2 Browser Fallback (install separately only when SCANNER_ENABLE_PLAYWRIGHT=true):
+# playwright==1.52.0
+
+# Development & Quality
+pytest==8.3.5
+ruff==0.11.6

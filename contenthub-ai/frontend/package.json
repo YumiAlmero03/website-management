@@ -1,0 +1,32 @@
+{
+  "name": "contenthub-ai-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "preview": "NITRO_HOST=127.0.0.1 NITRO_PORT=3100 node .output/server/index.mjs",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@iconify-json/lucide": "^1.2.43",
+    "@nuxt/ui": "^4.0.0",
+    "@pinia/nuxt": "^0.11.1",
+    "lucide-vue-next": "^0.511.0",
+    "nuxt": "^4.0.0",
+    "pinia": "^3.0.2",
+    "tailwindcss": "^4.1.4",
+    "ufo": "^1.6.1"
+  },
+  "devDependencies": {
+    "@vue/test-utils": "^2.4.6",
+    "happy-dom": "^17.4.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2",
+    "vue-tsc": "^2.2.8"
+  }
+}
