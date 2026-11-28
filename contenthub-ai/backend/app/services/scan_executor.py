@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from app.services.ai.generation_service import AiGenerationService
@@ -55,6 +56,10 @@ from app.services.scanner.url_normalizer import hash_url, matches_url_patterns
 from app.services.settings_service import SettingsService
 
 ScanDispatcher = Callable[[int], None]
+
+
+def _is_email_protection_url(url: str) -> bool:
+    return unquote(urlsplit(url).path).lower().rstrip("/") == "/cdn-cgi/l/email-protection"
 
 
 def default_subprocess_dispatcher(scan_id: int) -> None:
@@ -679,6 +684,26 @@ class ScanExecutorService:
             inline_candidates[url_hash] = cand
             existing = self.content_repo.get_by_website_and_url_hash(site.id, url_hash)
 
+            if _is_email_protection_url(cand.url):
+                if existing and not existing.is_excluded:
+                    self.content_repo.update(
+                        existing.id, {"is_excluded": True, "status": "excluded"}
+                    )
+                self.scan_log_repo.upsert_scan_item(
+                    scan_log_id=scan_id,
+                    website_id=site.id,
+                    url=cand.url,
+                    normalized_url=norm_url,
+                    url_hash=url_hash,
+                    content_type="page",
+                    discovery_sources=cand.discovery_sources,
+                    discovered_title=cand.title,
+                    status="excluded",
+                    failure_reason="ignored_email_protection",
+                    error_detail="Ignored Cloudflare email-protection link.",
+                )
+                continue
+
             if existing is not None and existing.is_excluded:
                 self.scan_log_repo.upsert_scan_item(
                     scan_log_id=scan_id,
@@ -736,42 +761,7 @@ class ScanExecutorService:
                     merged_sources.append(src)
 
             if existing is None:
-                placeholder = self.content_repo.create(
-                    {
-                        "website_id": site.id,
-                        "content_type": decision.content_type,
-                        "classification_method": decision.classification_method,
-                        "manual_classification_override": False,
-                        "is_excluded": False,
-                        "title": (cand.title or norm_url).strip()[:500],
-                        "url": cand.url[:1000],
-                        "canonical_url": norm_url[:1000],
-                        "url_hash": url_hash,
-                        "author": cand.author[:255] if cand.author else None,
-                        "meta_description": cand.summary[:1000] if cand.summary else None,
-                        "categories": list(cand.categories),
-                        "tags": list(cand.tags),
-                        "keywords": [],
-                        "discovery_sources": merged_sources,
-                        "language": (cand.language or site.primary_language or "en")[:32],
-                        "content_hash": hash_url(norm_url),
-                        "word_count": 0,
-                        "extraction_status": "pending",
-                        "status": "discovered",
-                        "is_historical_baseline": not site.initial_scan_completed,
-                        "published_at": (
-                            cand.published_at.replace(tzinfo=None) if cand.published_at else None
-                        ),
-                        "source_updated_at": (
-                            cand.modified_at.replace(tzinfo=None) if cand.modified_at else None
-                        ),
-                        "first_discovered_at": now,
-                        "last_discovered_at": now,
-                        "last_checked_at": now,
-                    }
-                )
-                new_content_ids.add(placeholder.id)
-                content_row = placeholder
+                content_row = None
                 item_status = "pending"
             else:
                 updates: dict[str, Any] = {
@@ -799,11 +789,9 @@ class ScanExecutorService:
                 else:
                     item_status = "pending"
 
-            if self.approval_service is not None:
+            if self.approval_service is not None and content_row is not None:
                 with contextlib.suppress(Exception):
-                    self.approval_service.sync_discovered_content(
-                        content=content_row, website=site
-                    )
+                    self.approval_service.sync_discovered_content(content=content_row, website=site)
 
             self.scan_log_repo.upsert_scan_item(
                 scan_log_id=scan_id,
@@ -811,7 +799,7 @@ class ScanExecutorService:
                 url=cand.url,
                 normalized_url=norm_url,
                 url_hash=url_hash,
-                content_type=content_row.content_type,
+                content_type=content_row.content_type if content_row else decision.content_type,
                 discovery_sources=merged_sources,
                 discovered_title=cand.title,
                 discovered_published_at=(
@@ -821,7 +809,7 @@ class ScanExecutorService:
                     cand.modified_at.replace(tzinfo=None) if cand.modified_at else None
                 ),
                 status=item_status,
-                content_id=content_row.id,
+                content_id=content_row.id if content_row else None,
             )
 
     def _queue_pending_for_resume(
@@ -1000,6 +988,20 @@ class ScanExecutorService:
             if item.content_id is not None
             else self.content_repo.get_by_website_and_url_hash(site.id, item.url_hash)
         )
+        if _is_email_protection_url(item.url):
+            if existing and not existing.is_excluded:
+                self.content_repo.update(existing.id, {"is_excluded": True, "status": "excluded"})
+            self.scan_log_repo.update_scan_item(
+                item.id,
+                {
+                    "content_id": None,
+                    "status": "excluded",
+                    "failure_reason": "ignored_email_protection",
+                    "error_detail": "Ignored Cloudflare email-protection link.",
+                    "processed_at": now_naive,
+                },
+            )
+            return
         was_new = (
             existing is None
             or existing.id in new_content_ids
@@ -1055,7 +1057,7 @@ class ScanExecutorService:
             response_status = 200
         else:
             try:
-                response = self.fetcher.fetch(item.url)
+                response = self.fetcher.fetch(item.url, stop_on_redirect=True)
                 response_status = response.status_code
             except ScannerError as exc:
                 self._record_item_failure_or_exclusion(
@@ -1067,6 +1069,24 @@ class ScanExecutorService:
                     failure_reason="fetch_error",
                     error_detail=str(exc),
                     now_naive=now_naive,
+                )
+                return
+
+            if response.status_code in {301, 302, 303, 307, 308}:
+                if existing:
+                    self.content_repo.update(
+                        existing.id, {"is_excluded": True, "status": "excluded"}
+                    )
+                self.scan_log_repo.update_scan_item(
+                    item.id,
+                    {
+                        "content_id": None,
+                        "status": "excluded",
+                        "http_status": response.status_code,
+                        "failure_reason": "ignored_redirect",
+                        "error_detail": "Ignored redirect URL.",
+                        "processed_at": now_naive,
+                    },
                 )
                 return
 
@@ -1191,6 +1211,7 @@ class ScanExecutorService:
 
         if existing is None:
             payload["first_discovered_at"] = now_naive
+            payload["is_historical_baseline"] = not site.initial_scan_completed
             content_row = self.content_repo.create(payload)
         else:
             content_row = self.content_repo.update(existing.id, payload) or existing

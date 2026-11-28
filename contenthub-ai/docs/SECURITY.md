@@ -53,6 +53,7 @@ ContentHub AI is a **single-administrator private application** deployed on a sh
 ## 4. Phase 3 Implemented Security Controls (Gemini AI Engine, Prompts & Social Profiles)
 
 - **Encrypted Gemini Keys & Social Credentials:** `ai_providers.encrypted_api_key` and all six per-profile secret columns on `social_profiles` (`encrypted_api_key`, `encrypted_api_secret`, `encrypted_access_token`, `encrypted_refresh_token`, `encrypted_app_id`, `encrypted_app_secret`) are encrypted at rest via Fernet (`APP_ENCRYPTION_KEY`), returned strictly masked with `Cache-Control: no-store`, and scrubbed from audit logs and provider test errors (`redact_text`).
+- **Prompt Logs:** Store redacted exchange text encrypted with `APP_ENCRYPTION_KEY`. The admin-only detail endpoint decrypts on demand and sets `Cache-Control: no-store`. History and CSV responses contain metadata only. Each captured text field is limited to 64,000 characters and the detail response indicates truncation.
 - **Restricted Jinja2 Prompt Sandbox (`prompt_builder.py`):** Uses `jinja2.sandbox.SandboxedEnvironment` with `globals.clear()`, restricted string/length filters only, strict undefined handling, explicit double-underscore (`__`) blocking, and strict `ALLOWED_PROMPT_VARIABLES` whitelist enforcement (`422 PROMPT_SECURITY_ERROR`).
 - **Prompt Injection Boundary Protection (`context_builder.py`):** Scraped page titles, meta descriptions, and extracted Markdown pass through `sanitize_untrusted_text()` to neutralize null bytes and forged `<source_content>` / `<system_instructions>` XML delimiter tags before rendering prompts.
 - **Free-First Quota & Fallback Lock (`quota_manager.py`):** Enforces local daily request, daily token, and RPM caps prior to Gemini invocations, rejects `allow_paid_fallback=true` (`422`), never rotates API keys silently, and defers over-quota background jobs safely to MySQL.
@@ -71,3 +72,23 @@ ContentHub AI is a **single-administrator private application** deployed on a sh
   - Prefer a dedicated private subdomain with valid HTTPS TLS (e.g., `https://contenthub.private.example.com/api/v1/accounts/oauth/callback`) restricted by VPN/IP allowlist at Nginx, **or**
   - Use provider-supported manual token / app password flows (such as WordPress Application Passwords or manual publishing fallback) when public callback exposure is undesirable.
 - **Never commit** `.env`, TLS keys, SQL dumps, backups, or `storage/` data to Git.
+
+
+---
+
+## Phase 4 Social Publishing Security Controls
+
+1. **Outbound Host Allowlist (`TrustedPublisherHttpClient`)**:
+   - External publishing and OAuth HTTP calls are restricted exclusively to HTTPS endpoints on verified platform hostnames (`graph.facebook.com`, `graph.threads.net`, `accounts.google.com`, `oauth2.googleapis.com`, `mybusiness*.googleapis.com`, `www.linkedin.com`, `api.linkedin.com`, `api.pinterest.com`, `api.x.com`). Plain HTTP and arbitrary redirect/target hosts raise `UNTRUSTED_PROVIDER_HOST`.
+2. **OAuth 2.0 CSRF, PKCE & Single-Use State Protection**:
+   - `OAuthStateSession` stores only `SHA-256(state)` (`state_hash`), encrypts PKCE `code_verifier` with Fernet (`app_encryption_key`), binds states strictly to `(social_profile_id, website_id)`, expires within 15 minutes, and marks consumed on first use (`409 Conflict` on replay).
+   - OAuth `redirect_uri` is validated against `APP_URL`, localhost/127.0.0.1 dev hosts, and explicit `OAUTH_ALLOWED_REDIRECT_HOSTS`.
+3. **Scoped Tokenized Media Delivery (`public-media/{token}`)**:
+   - Original files in `STORAGE_ROOT` remain untouched. Normalized images for platforms requiring HTTPS URLs are written to `STORAGE_ROOT/prepared_media/post_<id>/`, strictly canonicalized inside `prepared_media`, and accessible only via high-entropy unguessable tokens (`24h` expiry). Directory traversal outside `prepared_media` is blocked.
+4. **Preflight Approval & No-Surprise Spending Safeguards**:
+   - Linked source content approval (`ContentApproval`), SEO keyword approval (`ContentKeyword`), and pinned social draft revision approval (`SocialPost.approved_revision_id`) are enforced independently prior to external API publishing or scheduling.
+   - Material edits to caption/hashtags/CTA/UTM/media automatically invalidate draft approval and cancel queued schedules.
+   - `Publish Now` requires explicit confirmation (`confirm=true`); `auto_publish_enabled` remains disabled (`422`); paid APIs like X/Twitter require explicit `allow_paid_publishing` opt-in (`confirm_paid_api` / `/paid-policy`).
+5. **Duplicate Prevention & Secret Redaction**:
+   - Every publish attempt uses an idempotency key and `publish_dedupe_key`; network timeouts after submission enter `verification_required` rather than auto-retrying blindly.
+   - Tokens, app secrets, and Bearer headers are Fernet-encrypted at rest, never returned raw over HTTP, and redacted in `PublishingLog` and `ActivityLog`.

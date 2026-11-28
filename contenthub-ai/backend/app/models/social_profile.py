@@ -65,6 +65,28 @@ class SocialProfile(TimestampMixin, Base):
     auto_publish_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
     )
+    publishing_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("1")
+    )
+    display_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preferred_publishing_days: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    preferred_publishing_times: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    daily_publishing_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    min_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    require_approval_before_publish: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("1")
+    )
+    default_media_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    granted_permissions_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    publishing_eligibility_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", server_default="unknown"
+    )
+    publishing_eligibility_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    last_published_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    last_connection_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # AI Configuration
     custom_language: Mapped[str | None] = mapped_column(String(32), nullable=True)

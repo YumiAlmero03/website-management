@@ -47,6 +47,18 @@ class Phase2Metrics(BaseModel):
     approved_keywords_count: int = 0
 
 
+class Phase4PublishingMetrics(BaseModel):
+    drafts_awaiting_review: int = 0
+    approved_posts: int = 0
+    scheduled_posts: int = 0
+    published_today: int = 0
+    published_this_month: int = 0
+    failed_publications: int = 0
+    verification_required: int = 0
+    accounts_requiring_attention: int = 0
+    expiring_credentials: int = 0
+
+
 class DashboardSummaryResponse(BaseModel):
     generated_at: datetime
     timezone: str
@@ -57,6 +69,7 @@ class DashboardSummaryResponse(BaseModel):
     resources: SystemResourcesInfo
     phase1_counts: Phase1Counts
     phase2_metrics: Phase2Metrics
+    phase4_metrics: Phase4PublishingMetrics = Field(default_factory=Phase4PublishingMetrics)
     recent_scans: list[ScanLogResponse] = Field(default_factory=list)
     modules: list[PhaseModuleStatus]
     recent_activities: list[ActivityLogItem]

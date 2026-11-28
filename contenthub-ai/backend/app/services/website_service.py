@@ -14,6 +14,7 @@ from app.models.website_url_rule import WebsiteUrlRule
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
 from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
 from app.repositories.content_repo import ContentRepositoryProtocol
+from app.repositories.keyword_approval_repo import KeywordApprovalRepositoryProtocol
 from app.repositories.media_repo import MediaRepositoryProtocol
 from app.repositories.website_repo import WebsiteRepositoryProtocol
 from app.repositories.website_source_repo import WebsiteSourceConfigRepositoryProtocol
@@ -96,6 +97,7 @@ class WebsiteService:
         category_repo: WebsiteCategoryRepositoryProtocol,
         source_config_repo: WebsiteSourceConfigRepositoryProtocol,
         content_repo: ContentRepositoryProtocol,
+        keyword_approval_repo: KeywordApprovalRepositoryProtocol,
         media_repo: MediaRepositoryProtocol,
         activity_repo: ActivityLogRepositoryProtocol,
         fetcher: SafeHttpFetcher,
@@ -105,6 +107,7 @@ class WebsiteService:
         self.category_repo = category_repo
         self.source_config_repo = source_config_repo
         self.content_repo = content_repo
+        self.keyword_approval_repo = keyword_approval_repo
         self.media_repo = media_repo
         self.activity_repo = activity_repo
         self.fetcher = fetcher
@@ -279,6 +282,30 @@ class WebsiteService:
         if site is None:
             raise NotFoundError(f"Website #{website_id} not found.")
         return self._to_response(site)
+
+    def get_keyword_bank(self, website_id: int) -> list[str]:
+        site = self.website_repo.get_by_id(website_id)
+        if site is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+
+        keywords: dict[str, str] = {}
+
+        def add(raw: str | None) -> None:
+            phrase = " ".join(raw.split()) if raw else ""
+            if phrase:
+                keywords.setdefault(phrase.casefold(), phrase)
+
+        for keyword in site.keyword_bank or []:
+            add(keyword)
+        sources = self.keyword_approval_repo.list_content_keyword_sources(website_id)
+        for focus, secondary, _ in sources:
+            add(focus)
+            for keyword in secondary or []:
+                add(keyword)
+        for _, _, extracted in sources:
+            for keyword in extracted or []:
+                add(keyword)
+        return [keywords[key] for key in sorted(keywords)]
 
     def create_website(
         self,

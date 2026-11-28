@@ -1186,7 +1186,7 @@ onMounted(async () => {
                           class="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"
                         >
                           <AlertTriangle class="h-3 w-3" />
-                          {{ item.cannibalization_warnings.length }} overlap
+                          {{ item.cannibalization_warnings.some(w => w.severity === 'high') ? 'Exact overlap' : 'Possible cannibalization' }}
                         </span>
                       </div>
                     </div>
@@ -1197,6 +1197,7 @@ onMounted(async () => {
                       aria-label="Focus keyphrase"
                       placeholder="Enter primary focus keyphrase..."
                       class="w-full resize-y rounded border border-teal-300 bg-white px-2.5 py-1.5 text-xs font-medium leading-snug text-slate-900 focus:border-teal-600 focus:outline-none dark:border-teal-800 dark:bg-slate-950 dark:text-slate-100"
+                      :class="item.cannibalization_warnings.length && rowEdits[item.content_id]!.focus_keyphrase.trim() === item.keyword_mapping?.focus_keyphrase?.trim() ? '!border-yellow-400 !bg-yellow-100 dark:!border-yellow-600 dark:!bg-yellow-950' : ''"
                     />
                   </div>
                   <div>
@@ -1412,7 +1413,11 @@ onMounted(async () => {
                 </a>
               </td>
               <td class="px-3 py-3 align-top">
-                <span class="rounded bg-teal-50 px-2 py-0.5 text-xs font-semibold text-teal-800 dark:bg-teal-950/60 dark:text-teal-200">
+                <span
+                  class="rounded px-2 py-0.5 text-xs font-semibold"
+                  :class="entry.cannibalization_warnings.length > 0 ? 'bg-yellow-100 text-yellow-900 dark:bg-yellow-900/60 dark:text-yellow-200' : 'bg-teal-50 text-teal-800 dark:bg-teal-950/60 dark:text-teal-200'"
+                  :title="entry.cannibalization_warnings.some(w => w.severity === 'high') ? 'Exact keyword overlap' : entry.cannibalization_warnings.length ? 'Possible cannibalization' : undefined"
+                >
                   {{ entry.focus_keyphrase }}
                 </span>
                 <p class="mt-1 text-[10px] text-slate-400">
@@ -1454,7 +1459,7 @@ onMounted(async () => {
                   class="mt-1 flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400"
                 >
                   <AlertTriangle class="h-3.5 w-3.5 shrink-0" />
-                  <span>{{ entry.cannibalization_warnings.length }} conflict(s)</span>
+                  <span>{{ entry.cannibalization_warnings.some(w => w.severity === 'high') ? 'Exact overlap' : 'Possible cannibalization' }}</span>
                 </div>
               </td>
               <td class="px-3 py-3 align-top text-right">

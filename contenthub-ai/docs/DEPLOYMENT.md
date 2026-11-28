@@ -63,3 +63,46 @@ runuser -u www -- /www/wwwroot/webtracker.com/contenthub-ai/backend/.venv/bin/py
 1. **View Logs (UI):** Open **aaPanel → Files** → `/www/wwwroot/.contenthub-storage/logs/`.
 2. **Database Backup (UI):** Use **aaPanel → Databases → Backup** (or **Cron → Backup Database**) before applying new database migrations.
 3. **Rollback:** Revert to the previous Git commit, run `setup-aapanel.sh --resume` from **aaPanel → Cron**, and restore the database backup in **aaPanel → Databases** only if a schema migration must be reverted.
+
+
+---
+
+## Phase 4 Operations — Publishing Worker, aaPanel Cron & Public Media
+
+### 1. Environment Variables (`backend/.env`)
+
+```dotenv
+PUBLIC_MEDIA_BASE_URL=https://api.your-contenthub-domain.com
+OAUTH_ALLOWED_REDIRECT_HOSTS=admin.your-contenthub-domain.com
+META_GRAPH_API_VERSION=v27.0
+LINKEDIN_API_VERSION=202610
+PUBLISHING_REQUEST_TIMEOUT_SECONDS=30
+PUBLISHING_STALE_TIMEOUT_MINUTES=15
+PUBLISHING_MAX_ATTEMPTS=3
+```
+
+### 2. Database Migration & Safe Upgrade
+
+Always back up MySQL with `mysqldump` prior to running schema migrations in production:
+
+```bash
+cd backend
+source .venv/bin/activate
+alembic upgrade head
+alembic current  # verify 20261128_0008 (head)
+python -m app.cli check-db
+```
+
+### 3. aaPanel Cron Scheduler (Due Scheduled Publishes & Retries)
+
+Configure an aaPanel Shell Script cron job every 1 minute to process due scheduled posts and deferred retry jobs safely under a non-blocking MySQL advisory lock (`contenthub_publishing_jobs_lock`):
+
+```bash
+cd /www/wwwroot/contenthub-ai/backend && .venv/bin/python -m app.cli run-due-publishes --limit 10 >> /www/wwwlogs/contenthub-publishing-cron.log 2>&1
+```
+
+Manual single-job execution (used internally by detached Publish Now dispatchers or operator diagnostics):
+
+```bash
+cd /www/wwwroot/contenthub-ai/backend && .venv/bin/python -m app.cli run-publish-job --job-id <JOB_ID>
+```

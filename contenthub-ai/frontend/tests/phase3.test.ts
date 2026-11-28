@@ -17,7 +17,9 @@ describe('Phase 3 navigation & AI helpers', () => {
     expect(social?.phase).toBe(3)
     expect(ai?.implemented).toBe(true)
     expect(ai?.phase).toBe(3)
-    expect(SIDEBAR_MODULES.find((m) => m.id === 'connected-accounts')?.implemented).toBeFalsy()
+    expect(SIDEBAR_MODULES.find((m) => m.id === 'connected-accounts')?.implemented).toBe(true)
+    expect(SIDEBAR_MODULES.find((m) => m.id === 'publishing-calendar')?.implemented).toBe(true)
+    expect(SIDEBAR_MODULES.find((m) => m.id === 'editorial-planner')?.implemented).toBeFalsy()
     expect(SIDEBAR_MODULES.find((m) => m.id === 'articles')?.implemented).toBeFalsy()
   })
 

@@ -57,7 +57,8 @@ from app.services.ai.exceptions import (
     AiTransientError,
 )
 from app.services.ai.prompt_builder import render_sandboxed_prompt
-from app.services.ai.provider import AiProviderClientProtocol
+from app.services.ai.prompt_log import encrypt_prompt_exchange, redact_ai_log_text
+from app.services.ai.provider import AiProviderClientProtocol, ProviderGenerationResult
 from app.services.ai.quota_manager import QuotaManager
 from app.services.ai.response_validator import (
     MultiProfileSocialBatchOutput,
@@ -793,6 +794,10 @@ class AiGenerationService:
             ("\n".join(seo_lines) + "\n\n" + pkg.text) if seo_lines else pkg.text
         )
 
+        exchange_prompt: tuple[str, str] | None = None
+        exchange_result: ProviderGenerationResult | None = None
+        exchange_estimate: int | None = None
+        exchange_template_id: int | None = None
         try:
             for batch in batches:
                 self.ai_repo.update_job(claimed.id, {"heartbeat_at": utc_now_naive()})
@@ -974,6 +979,13 @@ class AiGenerationService:
                             "latency_ms": 0,
                             "truncated_input": pkg.truncated,
                             "truncation_note": pkg.truncation_note,
+                            "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                                self.settings.app_encryption_key,
+                                system_instruction=system_prompt,
+                                user_prompt=user_prompt,
+                                response=parsed_batch.model_dump_json(),
+                                api_key=api_key,
+                            ),
                         }
                     )
                 else:
@@ -1002,10 +1014,19 @@ class AiGenerationService:
                                 "truncation_note": pkg.truncation_note,
                                 "error_code": qexc.code,
                                 "error_message": str(qexc)[:500],
+                                "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                                    self.settings.app_encryption_key,
+                                    system_instruction=system_prompt,
+                                    user_prompt=user_prompt,
+                                    api_key=api_key,
+                                ),
                             }
                         )
                         raise
 
+                    exchange_prompt = (system_prompt, user_prompt)
+                    exchange_estimate = est_tokens
+                    exchange_template_id = batch_prompt.id if batch_prompt else None
                     gen_res = self.provider_client.generate_structured(
                         api_key=api_key,
                         model_name=provider.selected_model,
@@ -1016,6 +1037,7 @@ class AiGenerationService:
                         max_output_tokens=provider.max_output_tokens,
                         timeout_seconds=provider.request_timeout_seconds,
                     )
+                    exchange_result = gen_res
                     api_calls += 1
                     parsed_raw = parse_structured_response(
                         gen_res.raw_text, MultiProfileSocialBatchOutput
@@ -1043,10 +1065,21 @@ class AiGenerationService:
                             "latency_ms": gen_res.latency_ms,
                             "truncated_input": pkg.truncated,
                             "truncation_note": pkg.truncation_note,
+                            "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                                self.settings.app_encryption_key,
+                                system_instruction=system_prompt,
+                                user_prompt=user_prompt,
+                                response=gen_res.raw_text,
+                                api_key=api_key,
+                            ),
                         }
                     )
 
                     gen_res_raw = gen_res
+                    exchange_prompt = None
+                    exchange_result = None
+                    exchange_estimate = None
+                    exchange_template_id = None
 
                 accepted_drafts, batch_errors = validate_multi_profile_batch(
                     output=parsed_batch,
@@ -1140,7 +1173,7 @@ class AiGenerationService:
                 {
                     "job_id": claimed.id,
                     "ai_provider_id": provider.id,
-                    "prompt_template_id": None,
+                    "prompt_template_id": exchange_template_id,
                     "website_id": site.id,
                     "website_content_id": content.id,
                     "task_type": "social_generation",
@@ -1151,8 +1184,15 @@ class AiGenerationService:
                     if exc.code == "GEMINI_RATE_LIMITED"
                     else ("timeout" if exc.code == "GEMINI_TIMEOUT" else "failed"),
                     "token_usage_status": "unknown",
+                    "estimated_input_tokens": exchange_estimate,
                     "error_code": exc.code,
-                    "error_message": str(exc)[:500],
+                    "error_message": redact_ai_log_text(str(exc), api_key)[:500],
+                    "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                        self.settings.app_encryption_key,
+                        system_instruction=exchange_prompt[0],
+                        user_prompt=exchange_prompt[1],
+                        api_key=api_key,
+                    ) if exchange_prompt else None,
                 }
             )
             if claimed.attempt_count < claimed.max_attempts:
@@ -1186,11 +1226,13 @@ class AiGenerationService:
                 {
                     "job_id": claimed.id,
                     "ai_provider_id": provider.id,
-                    "prompt_template_id": None,
+                    "prompt_template_id": exchange_template_id,
                     "website_id": site.id,
                     "website_content_id": content.id,
                     "task_type": "social_generation",
-                    "model_name": provider.selected_model,
+                    "model_name": (
+                        exchange_result.model_name if exchange_result else provider.selected_model
+                    ),
                     "context_mode": pkg.context_mode,
                     "cache_hit": False,
                     "status": (
@@ -1198,9 +1240,19 @@ class AiGenerationService:
                         if exc.code == "AI_RESPONSE_VALIDATION_ERROR"
                         else "failed"
                     ),
-                    "token_usage_status": "unknown",
+                    **resolve_usage_fields(
+                        estimated_input_tokens=exchange_estimate, provider_result=exchange_result
+                    ),
+                    "latency_ms": exchange_result.latency_ms if exchange_result else None,
                     "error_code": exc.code,
-                    "error_message": str(exc)[:500],
+                    "error_message": redact_ai_log_text(str(exc), api_key)[:500],
+                    "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                        self.settings.app_encryption_key,
+                        system_instruction=exchange_prompt[0],
+                        user_prompt=exchange_prompt[1],
+                        response=exchange_result.raw_text if exchange_result else None,
+                        api_key=api_key,
+                    ) if exchange_prompt else None,
                 }
             )
             failed = self.ai_repo.update_job(

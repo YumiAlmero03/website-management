@@ -26,6 +26,7 @@ from app.services.ai.cache import compute_cache_key
 from app.services.ai.context_builder import prepare_article_context, select_knowledge_sources
 from app.services.ai.exceptions import AiPermanentError, AiTransientError
 from app.services.ai.generation_service import AiGenerationService
+from app.services.ai.localai import LocalAiProvider
 from app.services.ai.model_registry import is_compatible_text_model, sort_models_free_first
 from app.services.ai.prompt_builder import render_sandboxed_prompt
 from app.services.ai.provider import ProviderGenerationResult, ProviderModelDescriptor
@@ -344,6 +345,78 @@ def test_scenarios_06_to_09_gemini_config_test_models_and_failures(
     assert paid_err.status_code == 422
 
 
+def test_localai_prompt_log_preserves_usage_and_redacts_credentials(
+    auth_client: tuple[TestClient, str],
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, csrf = auth_client
+    headers = {"X-CSRF-Token": csrf}
+    site = _create_website(client, csrf)
+    content = _seed_extracted_content(app, site["id"])
+    api_key = "synthetic-local-model-key"
+    provider = client.post(
+        "/api/v1/ai/providers",
+        headers=headers,
+        json={
+            "name": "LocalAI Test",
+            "provider_type": "localai",
+            "base_url": "http://127.0.0.1:8081/v1",
+            "api_key": api_key,
+            "selected_model": "qwen3.8-9b-q4",
+        },
+    )
+    assert provider.status_code == 201, provider.text
+
+    reply = json.dumps({
+        "focus_keyphrase": content.title,
+        "secondary_keywords": [],
+        "metadata": api_key,
+        "access_token": "synthetic-response-token",
+    })
+
+    def localai_reply(
+        _provider: LocalAiProvider, base_url: str, method: str, path: str, **kwargs: Any
+    ) -> httpx.Response:
+        assert base_url == "http://127.0.0.1:8081/v1"
+        assert (method, path) == ("POST", "/chat/completions")
+        assert kwargs["headers"]["Authorization"] == f"Bearer {api_key}"
+        return httpx.Response(200, json={
+            "model": "qwen3.8-9b-q4",
+            "choices": [{"message": {"content": reply, "reasoning": "hidden text"}}],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 30, "total_tokens": 70},
+        })
+
+    monkeypatch.setattr(LocalAiProvider, "_request", localai_reply)
+    refine_url = f"/api/v1/content-approvals/{content.id}/keywords/suggest-ai"
+    refined = client.post(refine_url, headers=headers, json={})
+    assert refined.status_code == 200, refined.text
+    assert refined.json()["suggestion_source"] == "localai_assisted"
+    entry = client.get("/api/v1/ai/history", params={"model_search": "QWEN"}).json()["items"][0]
+    assert entry["provider_type"] == "localai"
+    assert entry["provider_name"] == "LocalAI Test"
+    assert entry["total_measured_tokens"] == 70
+    assert entry["task_type"] == "keyword_refinement"
+    log_row = app.dependency_overrides[get_ai_repo]().get_log_by_id(entry["id"])
+    assert log_row is not None and log_row.encrypted_prompt_exchange
+    assert content.title not in log_row.encrypted_prompt_exchange
+    detail = client.get(f"/api/v1/ai/prompt-logs/{entry['id']}").json()
+    assert content.title in detail["user_prompt"]
+    assert api_key not in detail["response"]
+    assert "synthetic-response-token" not in detail["response"]
+    assert "hidden text" not in detail["response"]
+    assert json.loads(detail["response"])["access_token"] == "[REDACTED]"
+
+    reply = "not keyword JSON"
+    fallback = client.post(refine_url, headers=headers, json={})
+    assert fallback.status_code == 200
+    assert fallback.json()["suggestion_source"] == "python_only"
+    failure = client.get("/api/v1/ai/history").json()["items"][0]
+    assert failure["status"] == "invalid_response"
+    assert failure["total_measured_tokens"] == 70
+    assert client.get(f"/api/v1/ai/prompt-logs/{failure['id']}").json()["response"] == reply
+
+
 def test_scenarios_10_to_13_knowledge_profiles_overrides_and_stale_tracking(
     auth_client: tuple[TestClient, str],
     app: FastAPI,
@@ -399,6 +472,21 @@ def test_scenarios_10_to_13_knowledge_profiles_overrides_and_stale_tracking(
     assert kp1["status"] == "generated"
     assert kp1["is_outdated"] is False
     assert kp1["field_provenance"]["business_overview"] == "ai_generated"
+    history = client.get("/api/v1/ai/history", params={"model_search": "GEMINI"})
+    assert history.status_code == 200, history.text
+    entry = history.json()["items"][0]
+    assert entry["provider_type"] == "gemini"
+    assert entry["total_measured_tokens"] == 265
+    assert "encrypted_prompt_exchange" not in entry
+    assert "user_prompt" not in entry
+    detail_url = f"/api/v1/ai/prompt-logs/{entry['id']}"
+    assert TestClient(app).get(detail_url).status_code == 401
+    detail = client.get(detail_url)
+    assert detail.headers["Cache-Control"] == "no-store"
+    assert detail.json()["user_prompt"] == fake_gemini.calls[-1]["user_prompt"]
+    assert detail.json()["system_instruction"] == fake_gemini.calls[-1]["system_instruction"]
+    assert "AI-synthesized factual overview" in detail.json()["response"]
+    assert client.get("/api/v1/ai/prompt-logs/99999").status_code == 404
 
     # Scenario 11: Manual edit & approval creates v2 and records admin provenance.
     patch_resp = client.patch(
@@ -647,6 +735,14 @@ def test_scenarios_14_to_19_prompts_security_preview_context_and_caching(
     assert res2.status == "completed"
     assert res2.result_summary["cache_hits"] == 1
     assert len(fake_gemini.calls) == 1
+    logs = client.get("/api/v1/ai/history", params={"task_type": "social_generation"}).json()
+    cache_log, provider_log = logs["items"]
+    assert cache_log["cache_hit"] is True and cache_log["total_measured_tokens"] is None
+    assert provider_log["cache_hit"] is False and provider_log["total_measured_tokens"] > 0
+    for log in (cache_log, provider_log):
+        exchange = client.get(f"/api/v1/ai/prompt-logs/{log['id']}").json()
+        assert "social_profile_id=" in exchange["user_prompt"]
+        assert json.loads(exchange["response"])["drafts"]
 
     stats = client.get("/api/v1/ai/cache/stats").json()
     assert stats["active_entries"] >= 1
@@ -855,11 +951,14 @@ def test_scenarios_20_to_29_generation_validation_x_urls_partial_and_draft_workf
     assert archived.status_code == 200
     assert archived.json()["status"] == "archived"
 
-    # Ensure there is NO external publishing endpoint in Phase 3.
-    assert client.post(
-        f"/api/v1/social-posts/{x_post['id']}/publish",
-        headers={"X-CSRF-Token": csrf},
-    ).status_code == 404
+    # Phase 4 now implements /publish; unconfirmed / archived posts fail validation cleanly (422).
+    assert (
+        client.post(
+            f"/api/v1/social-posts/{x_post['id']}/publish",
+            headers={"X-CSRF-Token": csrf},
+        ).status_code
+        == 422
+    )
 
 
 def test_scenarios_30_to_35_quotas_usage_workers_autoscan_cli_and_isolation(

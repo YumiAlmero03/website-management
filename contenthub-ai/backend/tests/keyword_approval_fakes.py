@@ -34,6 +34,29 @@ class InMemoryKeywordApprovalRepository:
         rows.sort(key=lambda r: (r.updated_at, r.id), reverse=True)
         return rows
 
+    def list_website_keyword_pairs(
+        self, website_id: int
+    ) -> list[tuple[ContentKeyword, WebsiteContent]]:
+        return [
+            (kw, content)
+            for kw in self.list_keywords_for_website(website_id)
+            if (content := self.content_repo.get_by_id(kw.website_content_id)) is not None
+            and content.website_id == website_id
+        ]
+
+    def list_content_keyword_sources(
+        self, website_id: int
+    ) -> list[tuple[str | None, list[str] | None, list[str] | None]]:
+        return [
+            (kw.focus_keyphrase if kw else None, kw.secondary_keywords_json if kw else None,
+             content.keywords)
+            for content in self.content_repo.list_for_website(website_id)
+            if not content.is_excluded and content.extraction_status == "extracted"
+            and content.status not in {"archived", "excluded"}
+            and ((kw := self.get_keyword_by_content_id(content.id)) is None
+                 or kw.approval_status != "rejected")
+        ]
+
     def upsert_keyword(
         self,
         *,

@@ -29,6 +29,10 @@ from app.repositories.keyword_approval_repo import (
     SQLAlchemyKeywordApprovalRepository,
 )
 from app.repositories.media_repo import MediaRepositoryProtocol, SQLAlchemyMediaRepository
+from app.repositories.publishing_repo import (
+    PublishingRepositoryProtocol,
+    SQLAlchemyPublishingRepository,
+)
 from app.repositories.scan_log_repo import ScanLogRepositoryProtocol, SQLAlchemyScanLogRepository
 from app.repositories.session_repo import SessionRepositoryProtocol, SQLAlchemySessionRepository
 from app.repositories.settings_repo import SettingsRepositoryProtocol, SQLAlchemySettingsRepository
@@ -63,6 +67,13 @@ from app.services.content_service import ContentService
 from app.services.dashboard_service import DashboardService
 from app.services.media_service import MediaService
 from app.services.monitoring.health_service import HealthService
+from app.services.publishers.registry import PublisherAdapterRegistry
+from app.services.publishing_connection_service import PublishingConnectionService
+from app.services.publishing_service import (
+    PublishingService,
+    PublishJobDispatcher,
+    default_publish_job_dispatcher,
+)
 from app.services.scan_executor import (
     ScanDispatcher,
     ScanExecutorService,
@@ -179,6 +190,22 @@ def get_keyword_approval_repo(
     return SQLAlchemyKeywordApprovalRepository(db)
 
 
+def get_publishing_repo(
+    db: Annotated[Session, Depends(get_db_session)],
+) -> PublishingRepositoryProtocol:
+    return SQLAlchemyPublishingRepository(db)
+
+
+def get_publisher_registry(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> PublisherAdapterRegistry:
+    return PublisherAdapterRegistry(settings=settings)
+
+
+def get_publish_job_dispatcher() -> PublishJobDispatcher:
+    return default_publish_job_dispatcher
+
+
 def get_ai_provider_client() -> AiProviderClientProtocol:
     return GeminiSdkProvider()
 
@@ -264,6 +291,8 @@ def get_dashboard_service(
     keyword_approval_repo: Annotated[
         KeywordApprovalRepositoryProtocol, Depends(get_keyword_approval_repo)
     ],
+    publishing_repo: Annotated[PublishingRepositoryProtocol, Depends(get_publishing_repo)],
+    social_post_repo: Annotated[SocialPostRepositoryProtocol, Depends(get_social_post_repo)],
 ) -> DashboardService:
     return DashboardService(
         settings=settings,
@@ -277,6 +306,8 @@ def get_dashboard_service(
         content_repo=content_repo,
         scan_log_repo=scan_log_repo,
         keyword_approval_repo=keyword_approval_repo,
+        publishing_repo=publishing_repo,
+        social_post_repo=social_post_repo,
     )
 
 
@@ -288,6 +319,9 @@ def get_website_service(
         WebsiteSourceConfigRepositoryProtocol, Depends(get_website_source_repo)
     ],
     content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
+    keyword_approval_repo: Annotated[
+        KeywordApprovalRepositoryProtocol, Depends(get_keyword_approval_repo)
+    ],
     media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
     fetcher: Annotated[SafeHttpFetcher, Depends(get_http_fetcher)],
@@ -298,6 +332,7 @@ def get_website_service(
         category_repo=category_repo,
         source_config_repo=source_config_repo,
         content_repo=content_repo,
+        keyword_approval_repo=keyword_approval_repo,
         media_repo=media_repo,
         activity_repo=activity_repo,
         fetcher=fetcher,
@@ -311,12 +346,34 @@ def get_social_profile_service(
     ],
     website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
+    publishing_repo: Annotated[PublishingRepositoryProtocol, Depends(get_publishing_repo)],
 ) -> SocialProfileService:
     return SocialProfileService(
         settings=settings,
         social_profile_repo=social_profile_repo,
         website_repo=website_repo,
         activity_repo=activity_repo,
+        publishing_repo=publishing_repo,
+    )
+
+
+def get_publishing_connection_service(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    social_profile_repo: Annotated[
+        SocialProfileRepositoryProtocol, Depends(get_social_profile_repo)
+    ],
+    publishing_repo: Annotated[PublishingRepositoryProtocol, Depends(get_publishing_repo)],
+    website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
+    activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
+    registry: Annotated[PublisherAdapterRegistry, Depends(get_publisher_registry)],
+) -> PublishingConnectionService:
+    return PublishingConnectionService(
+        settings=settings,
+        social_profile_repo=social_profile_repo,
+        publishing_repo=publishing_repo,
+        website_repo=website_repo,
+        activity_repo=activity_repo,
+        adapter_registry=registry,
     )
 
 
@@ -452,6 +509,10 @@ def get_social_post_service(
     content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
     media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
     activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
+    publishing_repo: Annotated[PublishingRepositoryProtocol, Depends(get_publishing_repo)],
+    keyword_approval_repo: Annotated[
+        KeywordApprovalRepositoryProtocol, Depends(get_keyword_approval_repo)
+    ],
 ) -> SocialPostService:
     return SocialPostService(
         settings=settings,
@@ -461,6 +522,50 @@ def get_social_post_service(
         content_repo=content_repo,
         media_repo=media_repo,
         activity_repo=activity_repo,
+        publishing_repo=publishing_repo,
+        keyword_approval_repo=keyword_approval_repo,
+    )
+
+
+def get_publishing_service(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    publishing_repo: Annotated[PublishingRepositoryProtocol, Depends(get_publishing_repo)],
+    social_post_repo: Annotated[SocialPostRepositoryProtocol, Depends(get_social_post_repo)],
+    social_profile_repo: Annotated[
+        SocialProfileRepositoryProtocol, Depends(get_social_profile_repo)
+    ],
+    website_repo: Annotated[WebsiteRepositoryProtocol, Depends(get_website_repo)],
+    content_repo: Annotated[ContentRepositoryProtocol, Depends(get_content_repo)],
+    media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
+    activity_repo: Annotated[ActivityLogRepositoryProtocol, Depends(get_activity_log_repo)],
+    health_service: Annotated[HealthService, Depends(get_health_service)],
+    settings_service: Annotated[SettingsService, Depends(get_settings_service)],
+    registry: Annotated[PublisherAdapterRegistry, Depends(get_publisher_registry)],
+    social_post_service: Annotated[SocialPostService, Depends(get_social_post_service)],
+    keyword_approval_repo: Annotated[
+        KeywordApprovalRepositoryProtocol, Depends(get_keyword_approval_repo)
+    ],
+    ai_repo: Annotated[AiRepositoryProtocol, Depends(get_ai_repo)],
+    fetcher: Annotated[SafeHttpFetcher, Depends(get_http_fetcher)],
+    dispatcher: Annotated[PublishJobDispatcher, Depends(get_publish_job_dispatcher)],
+) -> PublishingService:
+    return PublishingService(
+        settings=settings,
+        publishing_repo=publishing_repo,
+        social_post_repo=social_post_repo,
+        social_profile_repo=social_profile_repo,
+        website_repo=website_repo,
+        content_repo=content_repo,
+        media_repo=media_repo,
+        activity_repo=activity_repo,
+        health_service=health_service,
+        settings_service=settings_service,
+        adapter_registry=registry,
+        social_post_service=social_post_service,
+        keyword_approval_repo=keyword_approval_repo,
+        ai_repo=ai_repo,
+        fetcher=fetcher,
+        dispatcher=dispatcher,
     )
 
 

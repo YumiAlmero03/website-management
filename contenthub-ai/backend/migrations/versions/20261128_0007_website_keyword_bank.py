@@ -1,6 +1,7 @@
 """Add website keyword bank for editorial keyword references."""
 
 from collections.abc import Sequence
+
 import sqlalchemy as sa
 from alembic import op
 

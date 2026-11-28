@@ -223,6 +223,18 @@ export interface ScanItemListResponse {
   meta: PaginationMeta
 }
 
+export interface Phase4Metrics {
+  drafts_awaiting_review: number
+  approved_posts: number
+  scheduled_posts: number
+  published_today: number
+  published_this_month: number
+  failed_publications: number
+  verification_required: number
+  accounts_requiring_attention: number
+  expiring_credentials: number
+}
+
 export interface DashboardSummary {
   generated_at: string
   timezone: string
@@ -233,6 +245,7 @@ export interface DashboardSummary {
   resources: SystemResources
   phase1_counts: Phase1Counts
   phase2_metrics: Phase2Metrics
+  phase4_metrics?: Phase4Metrics
   recent_scans: ScanLog[]
   modules: PhaseModuleStatus[]
   recent_activities: ActivityLogItem[]
@@ -580,6 +593,27 @@ export interface SocialProfileItem {
   automatic_generation_enabled: boolean
   auto_publish_enabled: boolean
   auto_publish_available: boolean
+  publishing_enabled: boolean
+  display_timezone: string | null
+  effective_timezone: string
+  preferred_publishing_days: string[]
+  preferred_publishing_times: string[]
+  daily_publishing_limit: number | null
+  min_interval_minutes: number | null
+  require_approval_before_publish: boolean
+  default_media_required: boolean
+  connection_status: string
+  granted_permissions: string[]
+  missing_permissions: string[]
+  publishing_eligibility_status: string
+  publishing_eligibility_reason: string | null
+  target_resource_id: string | null
+  target_resource_name: string | null
+  allow_paid_publishing: boolean
+  last_verified_at: string | null
+  last_published_at: string | null
+  last_connection_error: string | null
+  capabilities: Record<string, unknown>
   custom_language: string | null
   effective_language: string
   writing_tone: string | null
@@ -825,6 +859,7 @@ export interface AiGenerationLogItem {
   job_id: number | null
   ai_provider_id: number
   provider_name: string | null
+  provider_type: string | null
   prompt_template_id: number | null
   website_id: number | null
   website_name: string | null
@@ -852,6 +887,14 @@ export interface AiGenerationLogItem {
 export interface AiGenerationLogListResponse {
   items: AiGenerationLogItem[]
   meta: PaginationMeta
+}
+
+export interface AiPromptLogDetail {
+  capture_status: 'captured' | 'not_captured' | 'unavailable'
+  system_instruction: string | null
+  user_prompt: string | null
+  response: string | null
+  truncated: boolean
 }
 
 export interface CacheEntryItem {
@@ -942,13 +985,16 @@ export interface SocialPostItem {
   website_content_id: number | null
   source_title: string | null
   source_content_type: string | null
+  focus_keyphrase: string | null
   social_profile_id: number
   social_profile_name: string | null
+  publishing_method: 'manual' | 'api' | string | null
   platform_id: number
   platform_key: string | null
   platform_display_name: string | null
   featured_media_id: number | null
   featured_image_url: string | null
+  media_count: number
   ai_generation_job_id: number | null
   ai_provider_id: number | null
   generation_model: string | null
@@ -964,6 +1010,19 @@ export interface SocialPostItem {
   character_limit: number | null
   validation_warnings: string[]
   status: 'pending_review' | 'approved' | 'rejected' | 'generation_failed' | 'archived' | string
+  publishing_status: string
+  approved_revision_id: number | null
+  alternative_captions: string[]
+  utm_params: Record<string, string>
+  target_url_with_utm: string | null
+  scheduled_for: string | null
+  display_timezone: string | null
+  published_at: string | null
+  external_post_id: string | null
+  published_url: string | null
+  verification_status: string
+  last_publish_error: string | null
+  last_publish_attempt_at: string | null
   is_manually_edited: boolean
   current_version: number
   error_message: string | null
@@ -979,11 +1038,18 @@ export interface SocialPostItem {
 
 export interface SocialPostStats {
   total_drafts: number
+  drafts: number
   pending_review: number
   approved: number
   rejected: number
   generation_failed: number
   archived: number
+  scheduled: number
+  publishing: number
+  published: number
+  manually_published: number
+  failed_publishing: number
+  verification_required: number
 }
 
 export interface SocialPostListResponse {
@@ -1187,4 +1253,243 @@ export interface KeywordMapListResponse {
   items: ApprovedKeywordMapEntry[]
   meta: PaginationMeta
   total_cannibalization_conflicts: number
+}
+
+// Phase 4 — Social Publishing, Account Connections, Calendar & History
+export interface TargetResourceOption {
+  target_id: string
+  name: string
+  account_type: string
+  profile_url: string | null
+  metadata: Record<string, unknown>
+}
+
+export interface SocialProfileConnectionItem {
+  social_profile_id: number
+  website_id: number
+  platform_id: number
+  platform_key: string
+  platform_display_name: string
+  auth_type: string
+  connection_status: string
+  account_type: string | null
+  external_account_id: string | null
+  external_username: string | null
+  external_display_name: string | null
+  profile_url: string | null
+  target_resource_id: string | null
+  target_resource_name: string | null
+  available_targets: TargetResourceOption[]
+  granted_scopes: string[]
+  required_scopes: string[]
+  missing_scopes: string[]
+  eligibility_status: string
+  eligibility_notes: string | null
+  access_tier: string | null
+  allow_paid_publishing: boolean
+  api_version: string | null
+  token_expires_at: string | null
+  refresh_token_expires_at: string | null
+  expires_soon: boolean
+  last_tested_at: string | null
+  last_refreshed_at: string | null
+  last_verified_at: string | null
+  last_published_at: string | null
+  last_error_code: string | null
+  last_error_message: string | null
+  metadata: Record<string, unknown>
+  capabilities: {
+    priority_tier?: number
+    supports_official_api?: boolean
+    supports_manual_fallback?: boolean
+    supports_oauth?: boolean
+    supports_pkce?: boolean
+    supports_refresh?: boolean
+    supports_target_selection?: boolean
+    requires_media?: boolean
+    requires_external_media_url?: boolean
+    requires_paid_api_ack?: boolean
+    required_scopes?: string[]
+    api_version?: string
+    limitations_summary?: string
+    rate_limit_summary?: string
+    [key: string]: unknown
+  }
+}
+
+export interface ConnectAccountResponse {
+  action: 'oauth_redirect' | 'connected' | 'manual_ready' | string
+  authorization_url: string | null
+  state_preview: string | null
+  expires_at: string | null
+  connection: SocialProfileConnectionItem
+}
+
+export interface SocialPostMediaAttachment {
+  id: number
+  social_post_id: number
+  media_asset_id: number
+  sort_order: number
+  role: string
+  alt_text: string | null
+  file_name: string | null
+  preview_url: string | null
+  public_url: string | null
+  mime_type: string | null
+  width: number | null
+  height: number | null
+  file_size: number | null
+  is_prepared: boolean
+  prepared_mime_type: string | null
+  prepared_width: number | null
+  prepared_height: number | null
+  prepared_file_size: number | null
+}
+
+export interface PreflightCheckItem {
+  name: string
+  passed: boolean
+  detail: string
+}
+
+export interface PublishingPreflightResponse {
+  social_post_id: number
+  ready: boolean
+  platform_key: string
+  publishing_method: string
+  destination_name: string
+  destination_target: string | null
+  assembled_content: string
+  character_count: number
+  character_limit: number | null
+  checks: PreflightCheckItem[]
+  errors: string[]
+  warnings: string[]
+  media: SocialPostMediaAttachment[]
+}
+
+export interface PublishingJobItem {
+  id: number
+  job_uuid: string
+  idempotency_key: string
+  website_id: number
+  website_name: string | null
+  social_profile_id: number | null
+  profile_name: string | null
+  social_post_id: number
+  publishing_schedule_id: number | null
+  approved_revision_id: number | null
+  platform_key: string
+  publishing_method: string
+  status: string
+  priority: number
+  scheduled_at: string | null
+  available_at: string
+  attempt_count: number
+  max_attempts: number
+  next_retry_at: string | null
+  worker_id: string | null
+  heartbeat_at: string | null
+  requires_verification: boolean
+  external_post_id: string | null
+  published_url: string | null
+  error_category: string | null
+  error_message: string | null
+  paused_reason: string | null
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PublishingJobListResponse {
+  items: PublishingJobItem[]
+  meta: PaginationMeta
+}
+
+export interface PublishingLogItem {
+  id: number
+  publishing_job_id: number | null
+  website_id: number
+  social_profile_id: number | null
+  social_post_id: number | null
+  platform_key: string
+  attempt_number: number
+  action: string
+  outcome: string
+  http_status: number | null
+  external_post_id: string | null
+  published_url: string | null
+  error_category: string | null
+  error_message: string | null
+  response_summary: Record<string, unknown>
+  created_at: string
+}
+
+export interface PublicationRecordItem {
+  id: number
+  website_id: number
+  website_name: string
+  social_profile_id: number | null
+  profile_name: string
+  platform_id: number
+  platform_key: string
+  platform_display_name: string
+  social_post_id: number | null
+  website_content_id: number | null
+  source_title: string | null
+  approved_revision_id: number | null
+  approved_version_number: number | null
+  publishing_job_id: number | null
+  publishing_method: string
+  verification_status: string
+  outcome: string
+  scheduled_at: string | null
+  published_at: string | null
+  external_post_id: string | null
+  published_url: string | null
+  caption_snapshot: string | null
+  hashtags: string[]
+  source_url: string | null
+  attempt_count: number
+  last_http_status: number | null
+  error_summary: string | null
+  created_at: string
+}
+
+export interface PublishingHistoryListResponse {
+  items: PublicationRecordItem[]
+  meta: PaginationMeta
+}
+
+export interface CalendarEventItem {
+  id: string
+  schedule_id: number | null
+  social_post_id: number
+  website_id: number
+  website_name: string | null
+  social_profile_id: number
+  profile_name: string | null
+  platform_key: string
+  platform_display_name: string | null
+  title: string
+  caption_preview: string
+  publishing_method: string
+  publishing_status: string
+  start_utc: string
+  display_timezone: string
+  local_iso: string
+  published_url: string | null
+  last_error: string | null
+  color: string
+}
+
+export interface CalendarResponse {
+  timezone: string
+  events: CalendarEventItem[]
+}
+
+export interface PublishingStatisticsResponse extends Phase4Metrics {
+  timezone: string
+  upcoming_scheduled: CalendarEventItem[]
 }

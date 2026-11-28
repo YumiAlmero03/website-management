@@ -1190,3 +1190,42 @@ alembic downgrade -1
 SQLite is strictly prohibited across the entire repository, including automated tests:
 - **Fast unit/API tests (`pytest`):** Use explicit in-memory repository implementations conforming to the same repository protocols as SQLAlchemy repositories.
 - **Live MySQL integration tests (`pytest -m mysql`):** Target an explicitly configured isolated test database via `CONTENTHUB_TEST_DATABASE_URL` (never production) to verify real MySQL connectivity, `InnoDB`, `utf8mb4`, and migrations.
+
+
+---
+
+## 6. Phase 4 Schema Extension (`20261128_0008` — Implemented & Live MySQL Verified)
+
+Migration `20261128_0008` adds seven InnoDB `utf8mb4` tables and extends `social_profiles` and `social_posts` while preserving all existing Phase 1–3 data and applying safe status backfills (`social_profiles.publishing_eligibility_status`, `social_posts.publishing_status`).
+
+### 6.1 Extended Existing Tables
+
+- **`social_profiles` additions:** `publishing_enabled`, `display_timezone`, `preferred_publishing_days`, `preferred_publishing_times`, `daily_publishing_limit`, `min_interval_minutes`, `require_approval_before_publish`, `default_media_required`, `granted_permissions_json`, `publishing_eligibility_status`, `publishing_eligibility_reason`, `last_verified_at`, `last_published_at`, `last_connection_error`.
+- **`social_posts` additions:** `publishing_status`, `approved_revision_id`, `alternative_captions_json`, `utm_params_json`, `target_url_with_utm`, `scheduled_for`, `display_timezone`, `published_at`, `external_post_id`, `published_url`, `verification_status`, `last_publish_error`, `last_publish_attempt_at`.
+
+### 6.2 New Phase 4 Tables
+
+1. **`social_profile_connections`**: Stores per-profile OAuth/API connection metadata, `account_type`, `target_resource_id`, `target_resource_name`, `available_targets_json`, `granted_scopes_json`, `required_scopes_json`, `missing_scopes_json`, `eligibility_status`, `access_tier`, `allow_paid_publishing` (explicit X/Twitter opt-in default `false`), `api_version`, `token_expires_at`, `refresh_token_expires_at`, `last_tested_at`, `last_refreshed_at`, `last_verified_at`.
+2. **`oauth_state_sessions`**: Stores SHA-256 `state_hash`, `redirect_uri`, Fernet-encrypted `encrypted_code_verifier` (PKCE S256), `requested_scopes_json`, `status` (`pending` / `consumed` / `expired` / `failed`), and short 15-minute `expires_at` TTL to prevent OAuth CSRF and replay attacks.
+3. **`social_post_media`**: Links `social_posts` to ordered `media_assets`, tracking Pillow normalization output (`prepared_file_path`, `prepared_mime_type`, `prepared_width`, `prepared_height`, `prepared_file_size`) and 24-hour scoped delivery tokens (`public_media_token`, `public_media_expires_at`) without modifying originals.
+4. **`publishing_schedules`**: Tracks scheduled publishing timestamps (`scheduled_at` in UTC + `display_timezone`), `approved_revision_id`, `status` (`scheduled` / `publishing` / `published` / `cancelled` / `verification_required`), `rescheduled_count`, and `cancel_reason`.
+5. **`publishing_jobs`**: Durable MySQL queue using `idempotency_key`, `publish_dedupe_key`, `status`, `available_at`, `attempt_count`, `max_attempts`, `next_retry_at`, `worker_id`, `locked_at`, `heartbeat_at`, and `requires_verification` with `SELECT ... FOR UPDATE` claiming and stale timeout recovery.
+6. **`publishing_logs`**: Attempt-level operational audit entries (`action`, `outcome`, `http_status`, redacted `error_category`/`error_message`, `external_post_id`, `published_url`, sanitized `response_summary_json`).
+7. **`publication_records`**: Permanent append-friendly history table snapshotting `website_name_snapshot`, `profile_name_snapshot`, `source_title_snapshot`, `caption_snapshot`, `hashtags_snapshot_json`, `verification_status`, `outcome`, `published_at`, `external_post_id`, and `published_url`. Uses `ON DELETE SET NULL` for `social_profile_id`, `social_post_id`, and `website_content_id` so analytics/history remain intact even if drafts or social profiles are removed.
+
+### 6.3 Phase 4 Mermaid ERD (`20261128_0008` — InnoDB, `utf8mb4`)
+
+```mermaid
+erDiagram
+    social_profiles ||--o| social_profile_connections : "tracks OAuth & eligibility"
+    social_profiles ||--o{ oauth_state_sessions : "PKCE single-use state"
+    social_posts ||--o{ social_post_media : "ordered prepared assets"
+    media_assets ||--o{ social_post_media : "source asset preserved"
+    social_posts ||--o{ publishing_schedules : "UTC + local TZ slot"
+    publishing_schedules ||--o{ publishing_jobs : "dispatches due job"
+    social_posts ||--o{ publishing_jobs : "idempotent execution"
+    publishing_jobs ||--o{ publishing_logs : "redacted attempt logs"
+    websites ||--o{ publication_records : "site isolation"
+    social_profiles ||--o{ publication_records : "SET NULL keeps snapshot"
+    social_posts ||--o{ publication_records : "SET NULL keeps history"
+```

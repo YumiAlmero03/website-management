@@ -10,6 +10,15 @@ from app.models.content_revision import ContentRevision
 from app.models.media_asset import MediaAsset
 from app.models.platform import Platform
 from app.models.prompt_template import PromptTemplate, PromptTemplateRevision
+from app.models.publishing import (
+    OAuthStateSession,
+    PublicationRecord,
+    PublishingJob,
+    PublishingLog,
+    PublishingSchedule,
+    SocialPostMedia,
+    SocialProfileConnection,
+)
 from app.models.session import AdminSession
 from app.models.setting import ApplicationSetting
 from app.models.social_post import SocialPost, SocialPostRevision
@@ -42,12 +51,19 @@ __all__ = [
     "ContentKeywordRevision",
     "ContentRevision",
     "MediaAsset",
+    "OAuthStateSession",
     "Platform",
     "PromptTemplate",
     "PromptTemplateRevision",
+    "PublicationRecord",
+    "PublishingJob",
+    "PublishingLog",
+    "PublishingSchedule",
     "SocialPost",
+    "SocialPostMedia",
     "SocialPostRevision",
     "SocialProfile",
+    "SocialProfileConnection",
     "User",
     "Website",
     "WebsiteCategory",

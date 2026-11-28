@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import Settings
 from app.core.exceptions import NotFoundError, ValidationAppError
@@ -9,6 +11,7 @@ from app.models.base import ensure_utc, utc_now, utc_now_naive
 from app.models.platform import Platform
 from app.models.social_profile import SocialProfile
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
+from app.repositories.publishing_repo import PublishingRepositoryProtocol
 from app.repositories.social_profile_repo import SocialProfileRepositoryProtocol
 from app.repositories.website_repo import WebsiteRepositoryProtocol
 from app.schemas.social_profile import (
@@ -30,6 +33,38 @@ CREDENTIAL_COLUMN_MAP: dict[str, str] = {
     "app_id": "encrypted_app_id",
     "app_secret": "encrypted_app_secret",
 }
+ALLOWED_PUBLISHING_DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+TIME_HHMM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _normalize_days(days: list[str] | None) -> list[str]:
+    if not days:
+        return []
+    out: list[str] = []
+    for raw in days:
+        val = str(raw).strip().lower()[:3]
+        if val not in ALLOWED_PUBLISHING_DAYS:
+            raise ValidationAppError(
+                f"Invalid preferred publishing day '{raw}'. Use mon..sun."
+            )
+        if val not in out:
+            out.append(val)
+    return out
+
+
+def _normalize_times(times: list[str] | None) -> list[str]:
+    if not times:
+        return []
+    out: list[str] = []
+    for raw in times:
+        val = str(raw).strip()
+        if not TIME_HHMM_RE.match(val):
+            raise ValidationAppError(
+                f"Invalid preferred publishing time '{raw}'. Use 24h HH:MM format."
+            )
+        if val not in out:
+            out.append(val)
+    return out
 
 
 class SocialProfileService:
@@ -42,11 +77,13 @@ class SocialProfileService:
         social_profile_repo: SocialProfileRepositoryProtocol,
         website_repo: WebsiteRepositoryProtocol,
         activity_repo: ActivityLogRepositoryProtocol,
+        publishing_repo: PublishingRepositoryProtocol | None = None,
     ) -> None:
         self.settings = settings
         self.repo = social_profile_repo
         self.website_repo = website_repo
         self.activity_repo = activity_repo
+        self.pub_repo = publishing_repo
 
     @staticmethod
     def _to_platform_response(p: Platform) -> PlatformResponse:
@@ -112,6 +149,28 @@ class SocialProfileService:
             if profile.character_limit is not None
             else platform.default_max_chars
         )
+        conn = self.pub_repo.get_connection_by_profile_id(profile.id) if self.pub_repo else None
+        latest_pub = (
+            self.pub_repo.get_latest_for_profile(profile.id) if self.pub_repo else None
+        )
+        last_published = profile.last_published_at or (
+            latest_pub.published_at if latest_pub else None
+        )
+        default_conn_status = (
+            "configured"
+            if profile.publishing_method == "manual" or has_creds
+            else "not_connected"
+        )
+        conn_status = conn.connection_status if conn else default_conn_status
+        elig_status = (
+            conn.eligibility_status
+            if conn
+            else (
+                "manual_only"
+                if profile.publishing_method == "manual"
+                else profile.publishing_eligibility_status
+            )
+        )
 
         return SocialProfileResponse(
             id=profile.id,
@@ -121,17 +180,55 @@ class SocialProfileService:
             platform_key=platform.platform_key,
             platform_display_name=platform.display_name,
             profile_name=profile.profile_name,
-            profile_url=profile.profile_url,
-            external_account_id=profile.external_account_id,
+            profile_url=conn.profile_url if conn and conn.profile_url else profile.profile_url,
+            external_account_id=(
+                conn.external_account_id
+                if conn and conn.external_account_id
+                else profile.external_account_id
+            ),
             profile_image_url=profile.profile_image_url,
             is_active=profile.is_active,
             publishing_method=profile.publishing_method,
             credential_status=profile.credential_status,
             generation_enabled=profile.generation_enabled,
             automatic_generation_enabled=profile.automatic_generation_enabled,
-            # External auto-publishing must remain disabled in Phase 3.
             auto_publish_enabled=False,
             auto_publish_available=False,
+            publishing_enabled=profile.publishing_enabled,
+            display_timezone=profile.display_timezone,
+            effective_timezone=profile.display_timezone or self.settings.app_timezone,
+            preferred_publishing_days=list(profile.preferred_publishing_days or []),
+            preferred_publishing_times=list(profile.preferred_publishing_times or []),
+            daily_publishing_limit=profile.daily_publishing_limit,
+            min_interval_minutes=profile.min_interval_minutes,
+            require_approval_before_publish=profile.require_approval_before_publish,
+            default_media_required=profile.default_media_required,
+            connection_status=conn_status,
+            granted_permissions=list(
+                (conn.granted_scopes_json if conn else None)
+                or profile.granted_permissions_json
+                or []
+            ),
+            missing_permissions=list(conn.missing_scopes_json or []) if conn else [],
+            publishing_eligibility_status=elig_status,
+            publishing_eligibility_reason=(
+                conn.eligibility_notes if conn else profile.publishing_eligibility_reason
+            ),
+            target_resource_id=conn.target_resource_id if conn else None,
+            target_resource_name=conn.target_resource_name if conn else None,
+            allow_paid_publishing=bool(conn.allow_paid_publishing) if conn else False,
+            last_verified_at=ensure_utc(
+                conn.last_verified_at
+                if conn and conn.last_verified_at
+                else profile.last_verified_at
+            ),
+            last_published_at=ensure_utc(last_published),
+            last_connection_error=(
+                conn.last_error_message
+                if conn and conn.last_error_message
+                else profile.last_connection_error
+            ),
+            capabilities=dict(platform.capabilities_json or {}),
             custom_language=profile.custom_language,
             effective_language=effective_lang,
             writing_tone=profile.writing_tone,
@@ -241,6 +338,15 @@ class SocialProfileService:
             )
         if payload.preferred_length and payload.preferred_length not in ALLOWED_PREFERRED_LENGTHS:
             raise ValidationAppError("Preferred length must be 'short', 'medium', or 'long'.")
+        if payload.display_timezone:
+            try:
+                ZoneInfo(payload.display_timezone.strip())
+            except ZoneInfoNotFoundError as exc:
+                raise ValidationAppError(
+                    f"Invalid IANA display_timezone '{payload.display_timezone}'."
+                ) from exc
+        pref_days = _normalize_days(payload.preferred_publishing_days)
+        pref_times = _normalize_times(payload.preferred_publishing_times)
 
         data: dict[str, Any] = {
             "website_id": website_id,
@@ -259,6 +365,17 @@ class SocialProfileService:
             "generation_enabled": payload.generation_enabled,
             "automatic_generation_enabled": payload.automatic_generation_enabled,
             "auto_publish_enabled": False,
+            "publishing_enabled": payload.publishing_enabled,
+            "display_timezone": (
+                payload.display_timezone.strip() if payload.display_timezone else None
+            ),
+            "preferred_publishing_days": pref_days,
+            "preferred_publishing_times": pref_times,
+            "daily_publishing_limit": payload.daily_publishing_limit,
+            "min_interval_minutes": payload.min_interval_minutes,
+            "require_approval_before_publish": payload.require_approval_before_publish,
+            "default_media_required": payload.default_media_required,
+            "publishing_eligibility_status": "manual_only" if pub_method == "manual" else "unknown",
             "custom_language": payload.custom_language.strip() if payload.custom_language else None,
             "writing_tone": payload.writing_tone.strip() if payload.writing_tone else None,
             "platform_ai_instructions": (
@@ -345,6 +462,40 @@ class SocialProfileService:
         if payload.automatic_generation_enabled is not None:
             updates["automatic_generation_enabled"] = payload.automatic_generation_enabled
         updates["auto_publish_enabled"] = False
+        if payload.publishing_enabled is not None:
+            updates["publishing_enabled"] = payload.publishing_enabled
+        if payload.clear_display_timezone:
+            updates["display_timezone"] = None
+        elif payload.display_timezone is not None:
+            tz_val = payload.display_timezone.strip()
+            if tz_val:
+                try:
+                    ZoneInfo(tz_val)
+                except ZoneInfoNotFoundError as exc:
+                    raise ValidationAppError(f"Invalid IANA timezone '{tz_val}'.") from exc
+                updates["display_timezone"] = tz_val
+            else:
+                updates["display_timezone"] = None
+        if payload.preferred_publishing_days is not None:
+            updates["preferred_publishing_days"] = _normalize_days(
+                payload.preferred_publishing_days
+            )
+        if payload.preferred_publishing_times is not None:
+            updates["preferred_publishing_times"] = _normalize_times(
+                payload.preferred_publishing_times
+            )
+        if payload.clear_daily_publishing_limit:
+            updates["daily_publishing_limit"] = None
+        elif payload.daily_publishing_limit is not None:
+            updates["daily_publishing_limit"] = payload.daily_publishing_limit
+        if payload.clear_min_interval_minutes:
+            updates["min_interval_minutes"] = None
+        elif payload.min_interval_minutes is not None:
+            updates["min_interval_minutes"] = payload.min_interval_minutes
+        if payload.require_approval_before_publish is not None:
+            updates["require_approval_before_publish"] = payload.require_approval_before_publish
+        if payload.default_media_required is not None:
+            updates["default_media_required"] = payload.default_media_required
         if payload.clear_custom_language:
             updates["custom_language"] = None
         elif payload.custom_language is not None:

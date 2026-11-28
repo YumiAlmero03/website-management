@@ -46,11 +46,12 @@ def test_authenticated_health_and_dashboard_return_real_phase2_metrics(
     dash_resp = client.get("/api/v1/dashboard/summary")
     assert dash_resp.status_code == 200
     dash = dash_resp.json()
-    assert dash["current_phase"] == 3
+    assert dash["current_phase"] == 4
     assert dash["phase1_counts"]["active_sessions"] == 1
     assert dash["phase2_metrics"]["total_categories"] == 8
     assert dash["phase2_metrics"]["active_websites"] == 0
     assert dash["phase2_metrics"]["total_contents"] == 0
+    assert dash["phase4_metrics"]["published_today"] == 0
 
     active_modules = [m for m in dash["modules"] if m["status"] == "active"]
     future_modules = [m for m in dash["modules"] if m["status"] == "not_implemented"]
@@ -60,10 +61,10 @@ def test_authenticated_health_and_dashboard_return_real_phase2_metrics(
         "content_approval",
         "ai_management",
         "social_media",
-    }
-    assert {m["key"] for m in future_modules} == {
         "connected_accounts",
         "publishing_calendar",
+    }
+    assert {m["key"] for m in future_modules} == {
         "editorial_planner",
         "articles",
         "automation",

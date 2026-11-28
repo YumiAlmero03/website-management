@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, and_, case, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.base import utc_now_naive
@@ -215,38 +215,40 @@ class SQLAlchemyContentRepository:
         category_id: int | None = None,
         discovered_since: datetime | None = None,
     ) -> dict[str, int]:
-        base = select(WebsiteContent)
+        content = WebsiteContent
+        active = content.is_excluded.is_(False)
+
+        def count_active(*conditions: ColumnElement[bool]) -> ColumnElement[int]:
+            return func.count(case((and_(active, *conditions), 1)))
+
+        other_types = ("category", "tag", "archive", "custom")
+        content_types = ("homepage", "page", "game_page", "blog_post", "blog_index", *other_types)
+        counts = {
+            "total_discovered": count_active(),
+            "total_extracted": count_active(content.extraction_status == "extracted"),
+            **{
+                f"{kind}_count": count_active(content.content_type == kind)
+                for kind in content_types
+            },
+            "other_count": count_active(content.content_type.in_(other_types)),
+            "pending_count": count_active(content.extraction_status == "pending"),
+            "failed_count": count_active(content.extraction_status == "failed"),
+            "updated_count": count_active(content.status == "updated"),
+            "excluded_count": func.count(case((content.is_excluded.is_(True), 1))),
+            "discovered_today_count": (
+                count_active(content.first_discovered_at >= discovered_since.replace(tzinfo=None))
+                if discovered_since is not None
+                else literal(0)
+            ),
+        }
+        stmt = select(*(value.label(key) for key, value in counts.items())).select_from(content)
         if category_id is not None:
-            base = base.join(Website, Website.id == WebsiteContent.website_id).where(
+            stmt = stmt.join(Website, Website.id == content.website_id).where(
                 Website.category_id == category_id
             )
         if website_id is not None:
-            base = base.where(WebsiteContent.website_id == website_id)
-        rows = list(self.db.execute(base).scalars().all())
-        since_naive = discovered_since.replace(tzinfo=None) if discovered_since else None
-
-        active = [r for r in rows if not r.is_excluded]
-        return {
-            "total_discovered": len(active),
-            "total_extracted": sum(1 for r in active if r.extraction_status == "extracted"),
-            "homepage_count": sum(1 for r in active if r.content_type == "homepage"),
-            "page_count": sum(1 for r in active if r.content_type == "page"),
-            "game_page_count": sum(1 for r in active if r.content_type == "game_page"),
-            "blog_post_count": sum(1 for r in active if r.content_type == "blog_post"),
-            "blog_index_count": sum(1 for r in active if r.content_type == "blog_index"),
-            "other_count": sum(
-                1 for r in active if r.content_type in {"category", "tag", "archive", "custom"}
-            ),
-            "pending_count": sum(1 for r in active if r.extraction_status == "pending"),
-            "failed_count": sum(1 for r in active if r.extraction_status == "failed"),
-            "updated_count": sum(1 for r in active if r.status == "updated"),
-            "excluded_count": sum(1 for r in rows if r.is_excluded),
-            "discovered_today_count": (
-                sum(1 for r in active if r.first_discovered_at >= since_naive)
-                if since_naive is not None
-                else 0
-            ),
-        }
+            stmt = stmt.where(content.website_id == website_id)
+        return dict(self.db.execute(stmt).mappings().one())
 
     def get_by_id(self, content_id: int) -> WebsiteContent | None:
         return self.db.get(WebsiteContent, content_id)

@@ -361,7 +361,7 @@ def test_scenario_08_and_09_large_sitemap_discovery_batching_and_resume(
     r1 = executor.execute_scan(s1.id)
 
     total_expected = total_urls + 1  # sitemap URLs + homepage '/'
-    assert memory_repos["contents"].count_by_website(site.id) == total_expected
+    assert memory_repos["contents"].count_by_website(site.id) == min(total_expected, max_per_run)
     assert r1.urls_found == total_expected
 
     if total_urls <= max_per_run:
@@ -387,6 +387,41 @@ def test_scenario_08_and_09_large_sitemap_discovery_batching_and_resume(
         assert stats["total_discovered"] == total_expected
         assert stats["total_extracted"] == total_expected
         assert stats["pending_count"] == 0
+
+
+def test_scan_ignores_email_protection_and_redirects(
+    test_settings: Settings, memory_repos: dict[str, Any], db_diagnostic_ok: Any
+) -> None:
+    site = memory_repos["websites"].create({
+        "category_id": 2, "name": "Example", "brand_name": "Example",
+        "domain": "example.com", "website_type": "wordpress", "discovery_method": "auto",
+        "sitemap_url": "https://example.com/sitemap.xml",
+    })
+    email_url = "https://example.com/cdn-cgi/l/email-protection#abc"
+    redirect_url = "https://example.com/old-page"
+    sitemap = (
+        '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"<url><loc>{email_url}</loc></url><url><loc>{redirect_url}</loc></url></urlset>"
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if req.url.path == "/sitemap.xml":
+            return httpx.Response(200, text=sitemap)
+        if req.url.path == "/old-page":
+            return httpx.Response(301, headers={"Location": "/new-page"})
+        return httpx.Response(200, text=_page_html("Home", "Homepage text " * 10))
+
+    executor = _make_executor(test_settings, memory_repos, db_diagnostic_ok, handler)
+    scan = executor.enqueue_scan(site.id, scan_mode="full", dispatch=False)
+    result = executor.execute_scan(scan.id)
+    items, _ = memory_repos["scans"].list_scan_items(scan.id, page=1, page_size=100)
+    ignored = {item.failure_reason for item in items if item.status == "excluded"}
+    assert {"ignored_email_protection", "ignored_redirect"} <= ignored
+    assert result.failed_articles == 0
+    urls = {row.url for row in memory_repos["contents"].list_for_website(site.id)}
+    assert email_url not in urls and redirect_url not in urls
 
 
 def test_scenario_11_to_16_deterministic_classification_and_custom_rules(

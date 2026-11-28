@@ -121,10 +121,10 @@ function removeAltSuggestion(idx: number) {
         <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <div class="space-y-1">
           <p class="font-semibold">
-            Keyword Cannibalization Warning ({{ cannibalizationWarnings.length }} overlap{{ cannibalizationWarnings.length > 1 ? 's' : '' }})
+            Keyword overlap warnings ({{ cannibalizationWarnings.length }})
           </p>
           <p class="text-[11px] opacity-90">
-            Other URLs on this website target an identical or closely overlapping focus keyphrase. Warning is non-blocking; differentiate if unintended:
+            Another URL uses an identical or related focus keyphrase. Review whether the pages target the same intent:
           </p>
           <ul class="space-y-1 pt-1">
             <li
@@ -139,6 +139,7 @@ function removeAltSuggestion(idx: number) {
               >
                 {{ match.similarity_score }}%
               </UBadge>
+              <span>{{ match.severity === 'high' ? 'Exact keyword overlap' : 'Possible cannibalization' }}</span>
               <NuxtLink
                 :to="`/content-library/${match.content_id}`"
                 class="font-medium underline"
@@ -198,6 +199,7 @@ function removeAltSuggestion(idx: number) {
           :disabled="disabled"
           placeholder="e.g. Fixed Odds vs Dynamic Odds"
           class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-900 focus:border-teal-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          :class="cannibalizationWarnings.length > 0 ? '!border-yellow-400 !bg-yellow-100 dark:!border-yellow-600 dark:!bg-yellow-950' : ''"
           @input="emitFocusKeyphrase(($event.target as HTMLInputElement).value)"
         >
       </div>

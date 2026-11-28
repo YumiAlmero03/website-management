@@ -278,9 +278,9 @@ def classify_url(
     if DATE_POST_RE.match(lowered):
         return ClassificationDecision("blog_post", "default_rule", is_excluded=False)
 
-    is_slot_listing = (
-        lowered.rstrip("/") in {"/slots", "/slot", "/games", "/game"}
-        or any(lowered.rstrip("/").endswith(suffix) for suffix in ("/slots/all", "/games/all", "/games/list"))
+    suffixes = ("/slots/all", "/games/all", "/games/list")
+    is_slot_listing = lowered.rstrip("/") in {"/slots", "/slot", "/games", "/game"} or any(
+        lowered.rstrip("/").endswith(suffix) for suffix in suffixes
     )
     if not is_slot_listing and any(
         lowered.startswith(prefix) and len(lowered) > len(prefix) for prefix in GAME_PAGE_PREFIXES

@@ -24,14 +24,58 @@ from app.core.dependencies import (
 from app.core.security import encrypt_secret
 from app.database import DatabaseDiagnostic
 from app.models.base import utc_now_naive
+from app.models.content_keyword import ContentKeyword
+from app.models.website_content import WebsiteContent
 from app.services.ai.generation_service import AiGenerationService
-from app.services.content.keyword_suggester import suggest_keywords_for_content
+from app.services.content.keyword_suggester import (
+    detect_cannibalization_warnings,
+    suggest_keywords_for_content,
+)
 from app.services.content_approval_service import ContentApprovalService
 from app.services.monitoring.health_service import HealthService
 from app.services.scan_executor import ScanExecutorService
 from app.services.scanner.security import SafeHttpFetcher
 from app.services.settings_service import SettingsService
 from tests.conftest import public_dns_resolver
+
+
+def test_game_keyword_overlap_distinguishes_related_titles() -> None:
+    phrases = [
+        "Golden Lamps slots", "Golden Cryptex slots", "Gold Star slots",
+        "Golden Cryptex Megawin slots",
+    ]
+    pairs = [
+        (
+            ContentKeyword(
+                website_content_id=i, focus_keyphrase=phrase, approval_status="approved"
+            ),
+            WebsiteContent(id=i, content_type="game_page", title=phrase,
+                           canonical_url=f"https://example.com/game/{i}", is_excluded=False),
+        )
+        for i, phrase in enumerate(phrases, 1)
+    ]
+    for index in (0, 2):
+        assert detect_cannibalization_warnings(
+            content_id=index + 1, focus_keyphrase=phrases[index], sibling_records=pairs
+        ) == []
+    for index, other in ((1, 4), (3, 2)):
+        warnings = detect_cannibalization_warnings(
+            content_id=index + 1, focus_keyphrase=phrases[index], sibling_records=pairs
+        )
+        assert [(w.content_id, w.severity) for w in warnings] == [(other, "medium")]
+        assert "Possible cannibalization" in warnings[0].reason
+
+    pairs.append((
+        ContentKeyword(
+            website_content_id=5, focus_keyphrase=phrases[1], approval_status="approved"
+        ),
+        WebsiteContent(id=5, content_type="game_page", title="Duplicate",
+                       canonical_url="https://example.com/game/5", is_excluded=False),
+    ))
+    warnings = detect_cannibalization_warnings(
+        content_id=2, focus_keyphrase=phrases[1], sibling_records=pairs
+    )
+    assert any(w.content_id == 5 and w.severity == "high" for w in warnings)
 
 
 def _create_website(client: TestClient, csrf: str, *, name: str, domain: str) -> dict[str, Any]:

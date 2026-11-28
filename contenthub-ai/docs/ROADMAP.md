@@ -36,7 +36,7 @@ Development proceeds strictly one phase at a time. Each phase ends with validati
 - Non-blocking cannibalization warnings highlight same-website focus keyphrase overlaps without auto-deleting/merging; `KeywordReuseService` serves approved mappings (`website_id`, `content_id`, `canonical_url`, `title`, `content_type`, `focus_keyphrase`, `secondary_keywords`, `anchor_text_variations`, `approval_status`).
 - Automatic social draft generation runs **once** only when website auto-generation is active, social profiles are eligible, and newly published non-baseline `blog_post` content and keywords are both approved, injecting approved keywords/links into prompts & cache fingerprints while preserving already approved drafts.
 
-## Phase 4 — Social Media Publishing *(Next)*
+## Phase 4 — Social Media Publishing *(Completed — Ready for Review)*
 - Social Post editor (captions, variants, hashtags, UTM builder, character limits, language & brand guidelines)
 - Modular Publisher Adapter interface + Priority 1 integrations: Facebook Pages Graph API & Manual Publishing fallback
 - Post approval workflow (Manual / Semi-automatic default / Automatic rules)

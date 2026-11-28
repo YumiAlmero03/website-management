@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from app.config import Settings
 from app.core.exceptions import NotFoundError, ValidationAppError
 from app.models.base import ensure_utc, utc_now
+from app.models.content_keyword import ContentKeyword
 from app.models.website_content import WebsiteContent
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
 from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
@@ -109,9 +110,17 @@ class ContentService:
         cat = self.category_repo.get_by_id(site.category_id) if site.category_id else None
         return site.name, site.domain, (cat.name if cat else None)
 
-    def _to_list_item(self, row: WebsiteContent) -> ContentListItemResponse:
+    def _to_list_item(
+        self,
+        row: WebsiteContent,
+        *,
+        sibling_cache: dict[int, list[tuple[ContentKeyword, WebsiteContent]]] | None = None,
+        website_meta: tuple[str | None, str | None, str | None] | None = None,
+    ) -> ContentListItemResponse:
         now = utc_now()
-        site_name, site_domain, cat_name = self._resolve_website_meta(row.website_id)
+        if website_meta is None:
+            website_meta = self._resolve_website_meta(row.website_id)
+        site_name, site_domain, cat_name = website_meta
         media = self.media_repo.get_by_id(row.featured_media_id) if row.featured_media_id else None
         featured_url = None
         if media is not None:
@@ -136,9 +145,13 @@ class ContentService:
         ):
             from app.services.content.keyword_suggester import detect_cannibalization_warnings
 
-            siblings = self.approval_service.reuse_service._load_website_keyword_pairs(
-                row.website_id
-            )
+            if sibling_cache is None:
+                sibling_cache = {}
+            if row.website_id not in sibling_cache:
+                sibling_cache[row.website_id] = (
+                    self.approval_service.reuse_service._load_website_keyword_pairs(row.website_id)
+                )
+            siblings = sibling_cache[row.website_id]
             cannibal_count = len(
                 detect_cannibalization_warnings(
                     content_id=row.id,
@@ -288,8 +301,18 @@ class ContentService:
             sort_dir=sort_dir,
         )
         total_pages = math.ceil(total / page_size) if total > 0 else 0
+        sibling_cache: dict[int, list[tuple[ContentKeyword, WebsiteContent]]] = {}
+        website_meta = {
+            site_id: self._resolve_website_meta(site_id)
+            for site_id in dict.fromkeys(row.website_id for row in rows)
+        }
         return ContentListResponse(
-            items=[self._to_list_item(row) for row in rows],
+            items=[
+                self._to_list_item(
+                    row, sibling_cache=sibling_cache, website_meta=website_meta[row.website_id]
+                )
+                for row in rows
+            ],
             meta=PaginationMeta(
                 page=page,
                 page_size=page_size,

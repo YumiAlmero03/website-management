@@ -216,6 +216,54 @@ onMounted(() => {
         </div>
       </section>
 
+      <!-- Phase 4 Social Publishing & Account Readiness Metrics -->
+      <section v-if="summary.phase4_metrics" aria-label="Social publishing statistics">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            Social Publishing &amp; Account Readiness
+          </h2>
+          <div class="flex flex-wrap items-center gap-2">
+            <UButton to="/connected-accounts" color="neutral" variant="outline" size="xs">
+              Connected Accounts
+            </UButton>
+            <UButton to="/publishing-calendar" color="neutral" variant="outline" size="xs">
+              Publishing Calendar
+            </UButton>
+            <UButton to="/social-media" color="primary" size="xs">
+              Social Publishing Hub
+            </UButton>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            title="Approved Ready / Pending"
+            :value="`${summary.phase4_metrics.approved_posts} / ${summary.phase4_metrics.drafts_awaiting_review}`"
+            subtitle="Ready to schedule or publish vs drafts awaiting review"
+            icon="Share2"
+          />
+          <MetricCard
+            title="Scheduled Queue"
+            :value="summary.phase4_metrics.scheduled_posts"
+            :subtitle="`Rendered in ${summary.timezone}`"
+            icon="CalendarDays"
+          />
+          <MetricCard
+            title="Published Today / Month"
+            :value="`${summary.phase4_metrics.published_today} / ${summary.phase4_metrics.published_this_month}`"
+            subtitle="API verified + recorded manual publications"
+            icon="CheckSquare"
+            status="ok"
+          />
+          <MetricCard
+            title="Publish Failures / Attention"
+            :value="`${summary.phase4_metrics.failed_publications + summary.phase4_metrics.verification_required} / ${summary.phase4_metrics.accounts_requiring_attention}`"
+            :subtitle="`${summary.phase4_metrics.verification_required} need verify · ${summary.phase4_metrics.expiring_credentials} tokens expiring`"
+            icon="Plug"
+            :status="summary.phase4_metrics.failed_publications + summary.phase4_metrics.verification_required + summary.phase4_metrics.accounts_requiring_attention > 0 ? 'warning' : 'ok'"
+          />
+        </div>
+      </section>
+
       <!-- Live Server & Database Health -->
       <section aria-label="Live infrastructure metrics">
         <h2 class="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -416,22 +464,22 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- Honest Future-Phase Modules Grid (Phases 4–6) -->
+      <!-- Honest Future-Phase Modules Grid (Phases 5–6) -->
       <section aria-label="Upcoming roadmap modules">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Upcoming Modules (Phases 4–6 — Not Yet Implemented)
+              Upcoming Modules (Phases 5–6 — Not Yet Implemented)
             </h2>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Live external publishing adapters, editorial article drafting, persistent scheduler workers, and analytics remain honestly withheld until their scheduled phases.
+              Editorial AI drafting, Google Search Console integrations, SEO analytics, and advanced automation rules arrive in Phases 5 and 6.
             </p>
           </div>
           <UBadge
             color="primary"
             variant="subtle"
           >
-            Active: Phase 3 — Gemini AI, Approvals & Drafts
+            Active: Phase 4 — Social Publishing & Scheduling
           </UBadge>
         </div>
 

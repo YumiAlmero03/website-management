@@ -9,6 +9,7 @@ from PIL import Image
 
 from app.config import Settings
 from app.core.dependencies import get_http_fetcher
+from app.models.website_content import WebsiteContent
 from app.services.scanner.security import SafeHttpFetcher
 from tests.conftest import public_dns_resolver
 
@@ -23,9 +24,52 @@ def test_website_categories_and_websites_require_authentication(client: TestClie
     assert client.get("/api/v1/website-categories").status_code == 401
     assert client.get("/api/v1/websites").status_code == 401
     assert client.get("/api/v1/contents").status_code == 401
+    assert client.get("/api/v1/websites/1/keyword-bank").status_code == 401
     # Legacy /brands and /articles endpoints must no longer exist.
     assert client.get("/api/v1/brands").status_code == 404
     assert client.get("/api/v1/articles").status_code == 404
+
+
+def test_keyword_bank_combines_website_content_and_manual_entries(
+    auth_client: tuple[TestClient, str], memory_repos: dict[str, Any]
+) -> None:
+    client, _ = auth_client
+    site = memory_repos["websites"].create({
+        "name": "Keyword Site", "domain": "keywords.example.com", "keyword_bank": ["Slots Guide"],
+    })
+    other_site = memory_repos["websites"].create({
+        "name": "Other Site", "domain": "other.example.com",
+    })
+
+    def create_content(website_id: int, slug: str, keyword: str, **fields: Any) -> WebsiteContent:
+        url = f"https://example.com/{slug}"
+        return memory_repos["contents"].create({
+            "website_id": website_id,
+            "title": slug,
+            "url": url,
+            "canonical_url": url,
+            "url_hash": slug,
+            "content_hash": slug,
+            "keywords": [keyword],
+            **fields,
+        })
+
+    row = create_content(site.id, "game", "Volatility")
+    memory_repos["keyword_approvals"].upsert_keyword(
+        website_id=site.id,
+        website_content_id=row.id,
+        data={"focus_keyphrase": "Golden Lamps slots",
+              "secondary_keywords_json": ["SLOTS   GUIDE", "Golden Lamps"]},
+    )
+    create_content(site.id, "unmapped", "Demo play")
+    create_content(site.id, "excluded", "Excluded phrase", is_excluded=True)
+    create_content(other_site.id, "other", "Another website's keyword")
+
+    response = client.get(f"/api/v1/websites/{site.id}/keyword-bank")
+    assert response.status_code == 200
+    assert response.json() == [
+        "Demo play", "Golden Lamps", "Golden Lamps slots", "Slots Guide", "Volatility",
+    ]
 
 
 def test_website_category_lifecycle_and_delete_protection(

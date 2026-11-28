@@ -4,7 +4,7 @@ import re
 from typing import Any, Protocol
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.models.base import utc_now_naive
 from app.models.content_approval import ContentApproval, ContentApprovalHistory
@@ -24,6 +24,12 @@ class KeywordApprovalRepositoryProtocol(Protocol):
     def list_keywords_for_website(
         self, website_id: int, *, approval_status: str | None = None
     ) -> list[ContentKeyword]: ...
+    def list_website_keyword_pairs(
+        self, website_id: int
+    ) -> list[tuple[ContentKeyword, WebsiteContent]]: ...
+    def list_content_keyword_sources(
+        self, website_id: int
+    ) -> list[tuple[str | None, list[str] | None, list[str] | None]]: ...
     def upsert_keyword(
         self,
         *,
@@ -102,6 +108,52 @@ class SQLAlchemyKeywordApprovalRepository:
             stmt = stmt.where(ContentKeyword.approval_status == approval_status)
         stmt = stmt.order_by(ContentKeyword.updated_at.desc(), ContentKeyword.id.desc())
         return list(self.db.execute(stmt).scalars().all())
+
+    def list_website_keyword_pairs(
+        self, website_id: int
+    ) -> list[tuple[ContentKeyword, WebsiteContent]]:
+        stmt = (
+            select(ContentKeyword, WebsiteContent)
+            .join(WebsiteContent, WebsiteContent.id == ContentKeyword.website_content_id)
+            .where(ContentKeyword.website_id == website_id, WebsiteContent.website_id == website_id)
+            .options(
+                load_only(ContentKeyword.focus_keyphrase, ContentKeyword.approval_status),
+                load_only(
+                    WebsiteContent.id,
+                    WebsiteContent.title,
+                    WebsiteContent.canonical_url,
+                    WebsiteContent.content_type,
+                    WebsiteContent.is_excluded,
+                ),
+            )
+        )
+        return [(kw, content) for kw, content in self.db.execute(stmt).tuples()]
+
+    def list_content_keyword_sources(
+        self, website_id: int
+    ) -> list[tuple[str | None, list[str] | None, list[str] | None]]:
+        stmt = (
+            select(
+                ContentKeyword.focus_keyphrase,
+                ContentKeyword.secondary_keywords_json,
+                WebsiteContent.keywords,
+            )
+            .select_from(WebsiteContent)
+            .outerjoin(
+                ContentKeyword,
+                (ContentKeyword.website_content_id == WebsiteContent.id)
+                & (ContentKeyword.website_id == website_id),
+            )
+            .where(
+                WebsiteContent.website_id == website_id,
+                WebsiteContent.is_excluded.is_(False),
+                WebsiteContent.extraction_status == "extracted",
+                WebsiteContent.status.not_in(("excluded", "archived")),
+                or_(ContentKeyword.id.is_(None), ContentKeyword.approval_status != "rejected"),
+            )
+            .order_by(WebsiteContent.id)
+        )
+        return list(self.db.execute(stmt).tuples())
 
     def upsert_keyword(
         self,

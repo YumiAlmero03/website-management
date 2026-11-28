@@ -21,6 +21,7 @@ from app.repositories.category_repo import SQLAlchemyWebsiteCategoryRepository
 from app.repositories.content_repo import SQLAlchemyContentRepository
 from app.repositories.keyword_approval_repo import SQLAlchemyKeywordApprovalRepository
 from app.repositories.media_repo import SQLAlchemyMediaRepository
+from app.repositories.publishing_repo import SQLAlchemyPublishingRepository
 from app.repositories.scan_log_repo import SQLAlchemyScanLogRepository
 from app.repositories.session_repo import SQLAlchemySessionRepository
 from app.repositories.settings_repo import SQLAlchemySettingsRepository
@@ -34,9 +35,12 @@ from app.services.ai.generation_service import AiGenerationService
 from app.services.auth_service import AuthService
 from app.services.content_approval_service import ContentApprovalService
 from app.services.monitoring.health_service import HealthService
+from app.services.publishers.registry import PublisherAdapterRegistry
+from app.services.publishing_service import PublishingService
 from app.services.scan_executor import ScanExecutorService
 from app.services.scanner.security import SafeHttpFetcher
 from app.services.settings_service import SettingsService
+from app.services.social_post_service import SocialPostService
 
 
 def _build_ai_generation_service(db: Session, settings: Settings) -> AiGenerationService:
@@ -98,6 +102,50 @@ def _build_scan_executor(db: Session, settings: Settings) -> ScanExecutorService
         fetcher=SafeHttpFetcher(settings=settings),
         ai_generation_service=ai_gen_service,
         approval_service=approval_service,
+    )
+
+
+def _build_publishing_service(db: Session, settings: Settings) -> PublishingService:
+    activity_repo = SQLAlchemyActivityLogRepository(db)
+    settings_repo = SQLAlchemySettingsRepository(db)
+    website_repo = SQLAlchemyWebsiteRepository(db)
+    content_repo = SQLAlchemyContentRepository(db)
+    media_repo = SQLAlchemyMediaRepository(db)
+    pub_repo = SQLAlchemyPublishingRepository(db)
+    profile_repo = SQLAlchemySocialProfileRepository(db)
+    post_repo = SQLAlchemySocialPostRepository(db)
+    kw_repo = SQLAlchemyKeywordApprovalRepository(db)
+    post_svc = SocialPostService(
+        settings=settings,
+        social_post_repo=post_repo,
+        social_profile_repo=profile_repo,
+        website_repo=website_repo,
+        content_repo=content_repo,
+        media_repo=media_repo,
+        activity_repo=activity_repo,
+        publishing_repo=pub_repo,
+        keyword_approval_repo=kw_repo,
+    )
+    return PublishingService(
+        settings=settings,
+        publishing_repo=pub_repo,
+        social_post_repo=post_repo,
+        social_profile_repo=profile_repo,
+        website_repo=website_repo,
+        content_repo=content_repo,
+        media_repo=media_repo,
+        activity_repo=activity_repo,
+        health_service=HealthService(settings=settings),
+        settings_service=SettingsService(
+            settings=settings,
+            settings_repo=settings_repo,
+            activity_repo=activity_repo,
+        ),
+        adapter_registry=PublisherAdapterRegistry(settings=settings),
+        social_post_service=post_svc,
+        keyword_approval_repo=kw_repo,
+        ai_repo=SQLAlchemyAiRepository(db),
+        fetcher=SafeHttpFetcher(settings=settings),
     )
 
 
@@ -342,6 +390,66 @@ def run_pending_ai_jobs(*, limit: int = 10, service: AiGenerationService | None 
         db.close()
 
 
+def run_single_publish_job(
+    *,
+    job_id: int,
+    service: PublishingService | None = None,
+) -> int:
+    if service is not None:
+        result = service.execute_job(job_id)
+        print(
+            f"Publish Job #{result.id}: status={result.status}, "
+            f"attempts={result.attempt_count}, error={result.error_message or 'none'}"
+        )
+        return 0 if result.status in {"published", "deferred"} else 1
+
+    settings = get_settings()
+    db = get_session_factory()()
+    try:
+        pub_service = _build_publishing_service(db, settings)
+        result = pub_service.execute_job(job_id)
+        print(
+            f"Publish Job #{result.id}: status={result.status}, "
+            f"attempts={result.attempt_count}, error={result.error_message or 'none'}"
+        )
+        return 0 if result.status in {"published", "deferred"} else 1
+    except (AppError, SQLAlchemyError) as exc:
+        print(f"Publishing job execution error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+def run_due_publishes(*, limit: int = 10, service: PublishingService | None = None) -> int:
+    if service is not None:
+        results = service.run_due_jobs(limit=limit)
+        print(f"Processed {len(results)} due publishing job(s).")
+        return 0
+
+    settings = get_settings()
+    db = get_session_factory()()
+    lock_name = "contenthub_publishing_jobs_lock"
+    lock_acquired = False
+    try:
+        got = db.execute(text("SELECT GET_LOCK(:name, 0)"), {"name": lock_name}).scalar()
+        if got != 1:
+            print("Another publishing worker already holds the MySQL advisory lock; exiting.")
+            return 0
+        lock_acquired = True
+        pub_service = _build_publishing_service(db, settings)
+        results = pub_service.run_due_jobs(limit=limit)
+        print(f"Processed {len(results)} due publishing job(s).")
+        return 0
+    except SQLAlchemyError as exc:
+        print(f"Publishing worker DB error ({type(exc).__name__}): {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if lock_acquired:
+            with contextlib.suppress(SQLAlchemyError):
+                db.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -387,6 +495,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process queued and retryable deferred AI generation jobs under MySQL advisory lock.",
     )
     run_pending_ai.add_argument("--limit", type=int, default=10, help="Max jobs per pass.")
+
+    run_pub_parser = subparsers.add_parser(
+        "run-publish-job",
+        help="Claim and execute a single queued publishing job by ID.",
+    )
+    run_pub_parser.add_argument("--job-id", type=int, required=True, help="PublishingJob ID.")
+
+    run_due_pub = subparsers.add_parser(
+        "run-due-publishes",
+        help="Process due scheduled/queued publishing jobs under a MySQL advisory lock.",
+    )
+    run_due_pub.add_argument("--limit", type=int, default=10, help="Max jobs per pass.")
     return parser
 
 
@@ -410,6 +530,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_single_ai_job(job_id=args.job_id)
     if args.command == "run-pending-ai-jobs":
         return run_pending_ai_jobs(limit=args.limit)
+    if args.command == "run-publish-job":
+        return run_single_publish_job(job_id=args.job_id)
+    if args.command == "run-due-publishes":
+        return run_due_publishes(limit=args.limit)
 
     parser.print_help()
     return 1

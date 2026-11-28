@@ -116,6 +116,7 @@ class AiRepositoryProtocol(Protocol):
 
     # Logs & Usage
     def create_log(self, data: dict[str, Any]) -> AiGenerationLog: ...
+    def get_log_by_id(self, log_id: int) -> AiGenerationLog | None: ...
     def list_logs(
         self,
         *,
@@ -123,6 +124,7 @@ class AiRepositoryProtocol(Protocol):
         provider_id: int | None = None,
         task_type: str | None = None,
         status: str | None = None,
+        model_search: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[AiGenerationLog], int]: ...
@@ -671,6 +673,9 @@ class SQLAlchemyAiRepository:
         self.db.refresh(row)
         return row
 
+    def get_log_by_id(self, log_id: int) -> AiGenerationLog | None:
+        return self.db.get(AiGenerationLog, log_id)
+
     def list_logs(
         self,
         *,
@@ -678,6 +683,7 @@ class SQLAlchemyAiRepository:
         provider_id: int | None = None,
         task_type: str | None = None,
         status: str | None = None,
+        model_search: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[AiGenerationLog], int]:
@@ -695,6 +701,12 @@ class SQLAlchemyAiRepository:
         if status:
             stmt = stmt.where(AiGenerationLog.status == status)
             count_stmt = count_stmt.where(AiGenerationLog.status == status)
+        if model_search:
+            matches_model = func.lower(AiGenerationLog.model_name).contains(
+                model_search.casefold(), autoescape=True
+            )
+            stmt = stmt.where(matches_model)
+            count_stmt = count_stmt.where(matches_model)
         total = int(self.db.execute(count_stmt).scalar() or 0)
         offset = (page - 1) * page_size
         items = list(

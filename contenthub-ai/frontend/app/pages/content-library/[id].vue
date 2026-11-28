@@ -445,7 +445,11 @@ onMounted(async () => {
               {{ getApprovalStatusMeta(detail.approval_status).label }}
             </UBadge>
           </div>
-          <p class="mt-2 font-medium text-teal-700 dark:text-teal-300">
+          <p
+            class="mt-2 inline-block rounded px-2 py-0.5 font-medium"
+            :class="(detail.keyword_mapping?.cannibalization_warnings?.length || 0) > 0 ? 'bg-yellow-100 text-yellow-900 dark:bg-yellow-900/60 dark:text-yellow-200' : 'text-teal-700 dark:text-teal-300'"
+            :title="detail.keyword_mapping?.cannibalization_warnings?.some(w => w.severity === 'high') ? 'Exact keyword overlap' : detail.keyword_mapping?.cannibalization_warnings?.length ? 'Possible cannibalization' : undefined"
+          >
             {{ detail.keyword_mapping?.focus_keyphrase || detail.focus_keyphrase || 'No focus keyphrase assigned' }}
           </p>
           <p class="mt-1 line-clamp-2 text-slate-600 dark:text-slate-300">

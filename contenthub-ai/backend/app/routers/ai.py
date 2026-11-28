@@ -17,6 +17,7 @@ from app.schemas.ai import (
     AiGenerationJobListResponse,
     AiGenerationJobResponse,
     AiGenerationLogListResponse,
+    AiPromptLogDetailResponse,
     AiProviderCreateRequest,
     AiProviderModelsResponse,
     AiProviderResponse,
@@ -307,23 +308,38 @@ def get_ai_usage(
 
 @router.get("/ai/history", response_model=AiGenerationLogListResponse)
 def list_ai_history(
+    response: Response,
     _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
     service: Annotated[AiManagementService, Depends(get_ai_management_service)],
     website_id: int | None = Query(default=None, ge=1),
     provider_id: int | None = Query(default=None, ge=1),
     task_type: str | None = Query(default=None, max_length=64),
     status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    model_search: str | None = Query(default=None, min_length=1, max_length=120),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
 ) -> AiGenerationLogListResponse:
+    response.headers["Cache-Control"] = "no-store"
     return service.list_history(
         website_id=website_id,
         provider_id=provider_id,
         task_type=task_type,
         status=status_filter,
+        model_search=model_search,
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/ai/prompt-logs/{log_id}", response_model=AiPromptLogDetailResponse)
+def get_ai_prompt_log_detail(
+    log_id: int,
+    response: Response,
+    _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
+    service: Annotated[AiManagementService, Depends(get_ai_management_service)],
+) -> AiPromptLogDetailResponse:
+    response.headers["Cache-Control"] = "no-store"
+    return service.get_prompt_log_detail(log_id)
 
 
 @router.get("/ai/history/export")

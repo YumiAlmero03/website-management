@@ -23,6 +23,9 @@ from app.core.dependencies import (
     get_keyword_approval_repo,
     get_login_rate_limiter,
     get_media_repo,
+    get_publish_job_dispatcher,
+    get_publisher_registry,
+    get_publishing_repo,
     get_scan_dispatcher,
     get_scan_log_repo,
     get_session_repo,
@@ -1237,6 +1240,7 @@ def memory_repos() -> dict[str, Any]:
         InMemorySocialProfileRepository,
     )
     from tests.keyword_approval_fakes import InMemoryKeywordApprovalRepository
+    from tests.publishing_fakes import InMemoryPublishingRepository
 
     website_repo = InMemoryWebsiteRepository()
     content_repo = InMemoryContentRepository(website_repo)
@@ -1255,10 +1259,12 @@ def memory_repos() -> dict[str, Any]:
         "social_profiles": InMemorySocialProfileRepository(),
         "ai": InMemoryAiRepository(),
         "social_posts": InMemorySocialPostRepository(),
+        "publishing": InMemoryPublishingRepository(),
         "ai_client": FakeGeminiProviderClient(),
         "rate_limiter": SlidingWindowRateLimiter(max_attempts=3, window_seconds=300),
         "dispatched_scans": [],
         "dispatched_ai_jobs": [],
+        "dispatched_publish_jobs": [],
     }
 
 
@@ -1316,6 +1322,15 @@ def app(
         "keyword_approvals"
     ]
     application.dependency_overrides[get_ai_provider_client] = lambda: memory_repos["ai_client"]
+    application.dependency_overrides[get_publishing_repo] = lambda: memory_repos["publishing"]
+    application.dependency_overrides[get_publish_job_dispatcher] = lambda: (
+        lambda job_id: memory_repos["dispatched_publish_jobs"].append(job_id)
+    )
+    from app.services.publishers.registry import PublisherAdapterRegistry
+
+    application.dependency_overrides[get_publisher_registry] = lambda: PublisherAdapterRegistry(
+        settings=test_settings, transport=httpx.MockTransport(lambda _r: httpx.Response(404))
+    )
     application.dependency_overrides[get_ai_job_dispatcher] = lambda: (
         lambda job_id: memory_repos["dispatched_ai_jobs"].append(job_id)
     )

@@ -71,6 +71,7 @@ All Phase 2.1 endpoints require an authenticated administrator session (`401` ot
 | `GET` | `/api/v1/websites` | Admin | No | Paginated (`page`, `page_size`), filterable (`category_id`, `status`, `website_type`, `search`) list with merged brand profile & live content breakdown counts. |
 | `POST` | `/api/v1/websites` | Admin | **Yes** | Register website directly without pre-creating a brand. Accepts full URL or bare domain, SSRF-validates, assigns optional `category_id`, and stores merged brand/language/SEO/crawl configuration (`crawl_batch_size`, `crawl_max_urls_per_run`, `single_source_only`). |
 | `GET` | `/api/v1/websites/{website_id}` | Admin | No | Full website details, brand guidelines, schedule state, and content breakdown counts. |
+| `GET` | `/api/v1/websites/{website_id}/keyword-bank` | Admin | No | Alphabetized, deduplicated array of manual entries and focus, secondary, and extracted keywords from the website's eligible content. |
 | `PATCH` | `/api/v1/websites/{website_id}` | Admin | **Yes** | Partial update of website metadata, category assignment, brand guidelines, endpoints, crawl limits, or status. |
 | `DELETE` | `/api/v1/websites/{website_id}` | Admin | **Yes** | Delete website (`409 Conflict` while discovered `website_contents` exist; set `status="archived"` instead). |
 | `POST` | `/api/v1/websites/{website_id}/logo` | Admin | **Yes** | Multipart upload (`file`) for the website's brand logo (Pillow-validated, stored under `STORAGE_ROOT/images/`, saved as `website.logo_url`). |
@@ -157,7 +158,8 @@ All Phase 3 endpoints require an authenticated administrator session (`401` othe
 | `GET` | `/api/v1/ai/jobs` / `GET /api/v1/ai/jobs/{job_id}` | Admin | No | Inspect MySQL AI background generation jobs (`queued`, `processing`, `deferred`, `completed`, `partially_completed`, `failed`, `cancelled`). |
 | `POST` | `/api/v1/ai/jobs/{job_id}/retry` / `.../cancel` | Admin | **Yes** | Re-queue failed/deferred job (`202`) or cancel an active/deferred job. |
 | `GET` | `/api/v1/ai/usage` | Admin | No | Daily/monthly usage, measured vs `unknown` tokens, cache hit rate, quota status, and website/model/task breakdowns (`estimated_cost_usd_month` remains `null`). |
-| `GET` | `/api/v1/ai/history` / `GET /api/v1/ai/history/export` | Admin | No | Filterable invocation log list and UTF-8 CSV download. |
+| `GET` | `/api/v1/ai/history` / `GET /api/v1/ai/history/export` | Admin | No | Paginated invocation metadata and UTF-8 CSV download. List filters include website, provider, task, status and `model_search`. |
+| `GET` | `/api/v1/ai/prompt-logs/{log_id}` | Admin | No | `Cache-Control: no-store`. Reads the redacted system instruction, user prompt, and provider response for a history entry. `capture_status` is `captured`, `not_captured`, or `unavailable`. Missing IDs return `404`. |
 | `GET` | `/api/v1/ai/cache/stats` / `POST /api/v1/ai/cache/invalidate` | Admin | No / **Yes** | Inspect cached SHA-256 responses and selectively invalidate expired, website-scoped, or selected entries. |
 | `GET` | `/api/v1/social-posts` / `GET /api/v1/social-posts/{post_id}` | Admin | No | Filterable (`website_id`, `social_profile_id`, `platform_id`, `status`, `website_content_id`) draft queue with live status tab totals. |
 | `PATCH` | `/api/v1/social-posts/{post_id}` | Admin | **Yes** | Manually edit caption/title/hashtags/CTA, recalculate `assembled_content` & platform-aware char count, mark `is_manually_edited=true`, and add a revision. |
@@ -186,3 +188,42 @@ All Phase 3 endpoints require an authenticated administrator session (`401` othe
 - Phase 4: External publishing adapters, OAuth callbacks, `/api/v1/calendar`
 - Phase 5: `/api/v1/editorial/keywords`, `/api/v1/editorial/topics`, `/api/v1/editorial/plans`, `/api/v1/editorial/articles`
 - Phase 6: `/api/v1/automation/jobs`, `/api/v1/automation/rules`, `/api/v1/analytics`, `/api/v1/backups`
+
+
+---
+
+## Phase 4 Social Publishing API Reference
+
+All mutating endpoints require an authenticated session cookie plus `X-CSRF-Token`, except `/api/v1/public-media/{token}` which serves strictly token-scoped prepared images over GET.
+
+### Social Profile Connections & OAuth 2.0 / PKCE
+- `GET /api/v1/publishing/connections` — List connection status, scopes, target resource, and platform capabilities (`?website_id=`).
+- `GET /api/v1/social-profiles/{profile_id}/connection-status` — Inspect single profile connection state & API restrictions.
+- `POST /api/v1/social-profiles/{profile_id}/connect` — Start OAuth (`mode="oauth"`), validate direct tokens (`mode="credentials"`), or activate `mode="manual"`.
+- `POST /api/v1/social-profiles/{profile_id}/oauth/complete` — Exchange OAuth authorization `code` + verify single-use hashed `state` & PKCE verifier.
+- `POST /api/v1/social-profiles/{profile_id}/select-target` — Select discovered Facebook Page, Instagram Business account, GBP Location, LinkedIn Org, or Pinterest Board.
+- `POST /api/v1/social-profiles/{profile_id}/verify` — Run live read-only verification against platform API.
+- `POST /api/v1/social-profiles/{profile_id}/refresh` — Refresh OAuth access token when supported (`Google`, `Threads`, `LinkedIn`, `Pinterest`, `X`).
+- `POST /api/v1/social-profiles/{profile_id}/paid-policy` — Toggle explicit pay-per-use opt-in (`allow_paid_publishing` for X/Twitter).
+- `POST /api/v1/social-profiles/{profile_id}/disconnect` — Clear Fernet-encrypted tokens cleanly or switch to manual fallback.
+
+### Publishing Hub, Preflight, Scheduling & Manual Workflow
+- `GET /api/v1/social-posts` — Supports Phase 4 `view` (`drafts`, `pending_review`, `approved`, `scheduled`, `publishing`, `published`, `failed`, `manual_publishing`, `archived`), `publishing_status`, `date_from`, `date_to`, `search`.
+- `POST /api/v1/social-profiles/{profile_id}/test-post` — Admin session and `X-CSRF-Token` required. Body `{"caption": "Test post from ContentHub AI."}`. Returns `201` with an unpublished `SocialPostResponse` in `pending_review` and its initial revision saved. No source content, AI generation, or publishing job is created. Empty captions return `422` and unknown profiles return `404`.
+- `PATCH /api/v1/social-posts/{post_id}` — Supports `title`, `caption`, `cta_text`, `hashtags`, `alternative_captions`, `utm_params`, and automatic material-edit approval invalidation + schedule cancellation.
+- `GET /api/v1/social-posts/{post_id}/preflight` — Run 11-point preflight validation (`?confirm_paid_api=true|false`).
+- `GET /api/v1/social-posts/{post_id}/media` & `PUT /api/v1/social-posts/{post_id}/media` — Attach/reorder media assets (`PUT` invalidates prior approval if modified).
+- `POST /api/v1/social-posts/{post_id}/publish` — Requires `{"confirm": true}`; creates durable MySQL `PublishingJob` and dispatches worker (`202 Accepted`).
+- `POST /api/v1/social-posts/{post_id}/schedule` — Schedule or reschedule post (`scheduled_at` + `display_timezone`).
+- `POST /api/v1/social-posts/{post_id}/cancel-schedule` — Cancel pending schedule cleanly.
+- `POST /api/v1/social-posts/{post_id}/mark-published` — Record manual live URL (`published_url`, optional `external_post_id` & `notes`) -> `manually_published`.
+- `GET /api/v1/social-posts/{post_id}/logs` — List redacted publishing attempt logs.
+
+### Jobs, Reconciliation, Calendar, History & Public Media
+- `GET /api/v1/publishing/jobs` & `GET /api/v1/publishing/jobs/{job_id}` — Inspect durable publishing queue state.
+- `POST /api/v1/publishing/jobs/{job_id}/retry` — Explicit retry for failed/deferred jobs (blocks auto-retry of `verification_required`).
+- `POST /api/v1/publishing/jobs/{job_id}/reconcile` — Resolve ambiguous timeout outcomes (`resolution`: `auto` | `confirm_published` | `confirm_missing`).
+- `GET /api/v1/publishing/calendar` — Date-window events for FullCalendar (`start`, `end`, `website_id`, `social_profile_id`, `platform_key`, `status`).
+- `GET /api/v1/publishing/history` & `GET /api/v1/publishing/history/export` — Query permanent `publication_records` snapshots or export UTF-8 CSV.
+- `GET /api/v1/publishing/statistics` — Phase 4 queue, success, attention, and expiration metrics (`phase4_metrics` also surfaced in `GET /api/v1/dashboard/summary`).
+- `GET /api/v1/public-media/{token}` — Serve token-scoped prepared image files (`STORAGE_ROOT/prepared_media/`) before expiration.

@@ -31,6 +31,7 @@ from app.services.ai.exceptions import (
     AiTransientError,
 )
 from app.services.ai.prompt_builder import render_sandboxed_prompt
+from app.services.ai.prompt_log import encrypt_prompt_exchange, redact_ai_log_text
 from app.services.ai.provider import AiProviderClientProtocol
 from app.services.ai.quota_manager import QuotaManager
 from app.services.ai.response_validator import (
@@ -381,10 +382,17 @@ class KnowledgeProfileService:
                     "token_usage_status": "unknown",
                     "error_code": exc.code,
                     "error_message": str(exc)[:500],
+                    "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                        self.settings.app_encryption_key,
+                        system_instruction=system_prompt,
+                        user_prompt=user_prompt,
+                        api_key=api_key,
+                    ),
                 }
             )
             raise
 
+        gen_res = None
         try:
             gen_res = self.provider_client.generate_structured(
                 api_key=api_key,
@@ -399,7 +407,9 @@ class KnowledgeProfileService:
             parsed = parse_structured_response(gen_res.raw_text, WebsiteKnowledgeAnalysisOutput)
             assert isinstance(parsed, WebsiteKnowledgeAnalysisOutput)
         except AiError as exc:
-            usage_fields = resolve_usage_fields(estimated_input_tokens=est_tokens)
+            usage_fields = resolve_usage_fields(
+                estimated_input_tokens=est_tokens, provider_result=gen_res
+            )
             self.ai_repo.create_log(
                 {
                     "job_id": None,
@@ -408,7 +418,7 @@ class KnowledgeProfileService:
                     "website_id": website_id,
                     "website_content_id": None,
                     "task_type": "knowledge_analysis",
-                    "model_name": provider.selected_model,
+                    "model_name": gen_res.model_name if gen_res else provider.selected_model,
                     "context_mode": "optimized",
                     "cache_hit": False,
                     "status": (
@@ -425,8 +435,16 @@ class KnowledgeProfileService:
                         )
                     ),
                     **usage_fields,
+                    "latency_ms": gen_res.latency_ms if gen_res else None,
                     "error_code": exc.code,
-                    "error_message": str(exc)[:500],
+                    "error_message": redact_ai_log_text(str(exc), api_key)[:500],
+                    "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                        self.settings.app_encryption_key,
+                        system_instruction=system_prompt,
+                        user_prompt=user_prompt,
+                        response=gen_res.raw_text if gen_res else None,
+                        api_key=api_key,
+                    ),
                 }
             )
             raise
@@ -448,6 +466,13 @@ class KnowledgeProfileService:
                 "status": "succeeded",
                 **usage_fields,
                 "latency_ms": gen_res.latency_ms,
+                "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                    self.settings.app_encryption_key,
+                    system_instruction=system_prompt,
+                    user_prompt=user_prompt,
+                    response=gen_res.raw_text,
+                    api_key=api_key,
+                ),
             }
         )
 

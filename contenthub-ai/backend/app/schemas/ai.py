@@ -345,6 +345,7 @@ class AiGenerationLogResponse(BaseModel):
     job_id: int | None = None
     ai_provider_id: int
     provider_name: str | None = None
+    provider_type: str | None = None
     prompt_template_id: int | None = None
     website_id: int | None = None
     website_name: str | None = None
@@ -372,6 +373,14 @@ class AiGenerationLogResponse(BaseModel):
 class AiGenerationLogListResponse(BaseModel):
     items: list[AiGenerationLogResponse]
     meta: PaginationMeta
+
+
+class AiPromptLogDetailResponse(BaseModel):
+    capture_status: str = "not_captured"
+    system_instruction: str | None = None
+    user_prompt: str | None = None
+    response: str | None = None
+    truncated: bool = False
 
 
 class CacheEntryResponse(BaseModel):

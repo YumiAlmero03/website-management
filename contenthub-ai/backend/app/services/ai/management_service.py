@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
-from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
-from app.core.logging import redact_text
+from app.core.exceptions import ConfigurationError, ConflictError, NotFoundError, ValidationAppError
 from app.core.security import decrypt_secret, encrypt_secret, mask_secret_hint
 from app.models.ai_generation_log import AiGenerationLog
 from app.models.ai_provider import AiProvider
@@ -20,6 +20,7 @@ from app.repositories.website_repo import WebsiteRepositoryProtocol
 from app.schemas.ai import (
     AiGenerationLogListResponse,
     AiGenerationLogResponse,
+    AiPromptLogDetailResponse,
     AiProviderCreateRequest,
     AiProviderModelInfo,
     AiProviderModelsResponse,
@@ -34,10 +35,16 @@ from app.schemas.ai import (
 )
 from app.schemas.common import PaginationMeta
 from app.services.ai.exceptions import AiProviderNotConfiguredError
-from app.services.ai.model_registry import normalize_model_name, sort_models_free_first
-from app.services.ai.provider import AiProviderClientProtocol, ProviderModelDescriptor
 from app.services.ai.localai import LocalAiProvider
+from app.services.ai.model_registry import normalize_model_name, sort_models_free_first
+from app.services.ai.prompt_log import encrypt_prompt_exchange, redact_ai_log_text
+from app.services.ai.provider import (
+    GENERATION_PROBE_PROMPT,
+    AiProviderClientProtocol,
+    ProviderModelDescriptor,
+)
 from app.services.ai.quota_manager import QuotaManager, utc_day_window_start
+from app.services.ai.token_tracker import estimate_tokens_from_text
 
 
 class AiManagementService:
@@ -314,7 +321,7 @@ class AiManagementService:
 
         if provider.provider_type == "localai":
             res = LocalAiProvider().test_connection(
-                base_url=provider.base_url or "http://127.0.0.1:8080/v1",
+                base_url=provider.base_url or "http://127.0.0.1:8081/v1",
                 api_key=api_key,
                 selected_model=provider.selected_model,
                 timeout_seconds=provider.request_timeout_seconds,
@@ -330,7 +337,7 @@ class AiManagementService:
         now_naive = utc_now_naive()
         safe_err: str | None = None
         if res.error_detail:
-            safe_err = redact_text(res.error_detail).replace(api_key, "[REDACTED]")
+            safe_err = redact_ai_log_text(res.error_detail, api_key)
         serialized_models = [self._model_to_schema(m).model_dump() for m in res.discovered_models]
         updates: dict[str, Any] = {
             "last_test_status": "connected" if res.connected else "error",
@@ -343,7 +350,8 @@ class AiManagementService:
             updates["last_verified_at"] = now_naive
         self.ai_repo.update_provider(provider.id, updates)
 
-        if verify_generation and res.model_available:
+        if verify_generation and res.model_available and provider.provider_type == "gemini":
+            probe = res.generation_result
             self.ai_repo.create_log(
                 {
                     "job_id": None,
@@ -357,17 +365,26 @@ class AiManagementService:
                     "cache_hit": False,
                     "cache_key_hash": None,
                     "status": "succeeded" if res.connected else "failed",
-                    "estimated_input_tokens": 5,
-                    "measured_input_tokens": None,
-                    "measured_output_tokens": None,
+                    "estimated_input_tokens": estimate_tokens_from_text(GENERATION_PROBE_PROMPT),
+                    "measured_input_tokens": probe.measured_input_tokens if probe else None,
+                    "measured_output_tokens": probe.measured_output_tokens if probe else None,
                     "total_measured_tokens": res.generation_probe_tokens,
                     "token_usage_status": (
-                        "measured" if res.generation_probe_tokens is not None else "unknown"
+                        "measured" if (
+                            res.generation_probe_tokens is not None
+                            or (probe and probe.raw_usage_available)
+                        ) else "unknown"
                     ),
                     "estimated_cost_usd": None,
-                    "latency_ms": res.latency_ms,
+                    "latency_ms": probe.latency_ms if probe else res.latency_ms,
                     "error_code": None if res.connected else "PROBE_FAILED",
                     "error_message": safe_err[:500] if safe_err else None,
+                    "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                        self.settings.app_encryption_key,
+                        user_prompt=GENERATION_PROBE_PROMPT,
+                        response=(probe.raw_text or None) if probe else None,
+                        api_key=api_key,
+                    ),
                 }
             )
 
@@ -413,11 +430,17 @@ class AiManagementService:
 
         if refresh:
             api_key = self._decrypt_provider_key(provider)
-            descriptors = sort_models_free_first(
-                self.provider_client.list_models(
+            if provider.provider_type == "localai":
+                descriptors = LocalAiProvider().list_models(
+                    base_url=provider.base_url or "http://127.0.0.1:8081/v1",
+                    api_key=api_key,
+                    timeout_seconds=provider.request_timeout_seconds,
+                )
+            else:
+                raw_descriptors = self.provider_client.list_models(
                     api_key=api_key, timeout_seconds=provider.request_timeout_seconds
                 )
-            )
+                descriptors = sort_models_free_first(raw_descriptors)
             models = [self._model_to_schema(d) for d in descriptors]
             self.ai_repo.update_provider(
                 provider.id, {"available_models_json": [m.model_dump() for m in models]}
@@ -448,6 +471,7 @@ class AiManagementService:
             job_id=row.job_id,
             ai_provider_id=row.ai_provider_id,
             provider_name=provider.name if provider else None,
+            provider_type=provider.provider_type if provider else None,
             prompt_template_id=row.prompt_template_id,
             website_id=row.website_id,
             website_name=site.name if site else None,
@@ -467,10 +491,10 @@ class AiManagementService:
                 float(row.estimated_cost_usd) if row.estimated_cost_usd is not None else None
             ),
             latency_ms=row.latency_ms,
-            truncated_input=row.truncated_input,
+            truncated_input=bool(row.truncated_input),
             truncation_note=row.truncation_note,
             error_code=row.error_code,
-            error_message=row.error_message,
+            error_message=redact_ai_log_text(row.error_message) if row.error_message else None,
             created_at=ensure_utc(row.created_at) or utc_now(),
         )
 
@@ -481,6 +505,7 @@ class AiManagementService:
         provider_id: int | None = None,
         task_type: str | None = None,
         status: str | None = None,
+        model_search: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> AiGenerationLogListResponse:
@@ -489,6 +514,7 @@ class AiManagementService:
             provider_id=provider_id,
             task_type=task_type,
             status=status,
+            model_search=model_search,
             page=page,
             page_size=page_size,
         )
@@ -499,6 +525,22 @@ class AiManagementService:
                 page=page, page_size=page_size, total_items=total, total_pages=total_pages
             ),
         )
+
+    def get_prompt_log_detail(self, log_id: int) -> AiPromptLogDetailResponse:
+        row = self.ai_repo.get_log_by_id(log_id)
+        if row is None:
+            raise NotFoundError(f"AI log #{log_id} not found.")
+        if not row.encrypted_prompt_exchange:
+            return AiPromptLogDetailResponse()
+        try:
+            payload = json.loads(
+                decrypt_secret(row.encrypted_prompt_exchange, self.settings.app_encryption_key)
+            )
+            return AiPromptLogDetailResponse.model_validate(
+                {**payload, "capture_status": "captured"}
+            )
+        except (ConfigurationError, ValueError, TypeError):
+            return AiPromptLogDetailResponse(capture_status="unavailable")
 
     def export_history_csv(
         self,

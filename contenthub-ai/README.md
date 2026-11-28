@@ -2,7 +2,7 @@
 
 Private, self-hosted, AI-powered Content Distribution and Editorial Automation System for a single administrator on aaPanel.
 
-> **Current Milestone:** Phase 3 — Gemini AI Engine, Social Profiles & SEO Content Approval (complete & verified; ready for review before Phase 4).
+> **Current Milestone:** Phase 4 — Social Media Publishing, OAuth/PKCE Connections & Calendar Scheduling (complete & verified; ready for review before Phase 5).
 
 ---
 
@@ -63,3 +63,10 @@ Assuming Git, Nginx, MySQL, Python 3.12, Node 22.12+, and PM2 are already instal
 6. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Step-by-step aaPanel deployment
 7. [docs/ROADMAP.md](docs/ROADMAP.md) — 7-phase roadmap
 8. [docs/PROGRESS.md](docs/PROGRESS.md) — Progress & test results
+
+8. [docs/PLATFORM_SETUP_GUIDES.md](docs/PLATFORM_SETUP_GUIDES.md) — Official API setup, OAuth scopes, permissions, tiers, media rules & manual workflows for all Phase 4 platforms
+
+## Phase 4 Highlights
+- **Official API Publishers & Manual Workflow:** Facebook Pages (`v27.0`), Instagram Graph (`v27.0`), Google Business Profile (`v1`/`v4`), Threads, LinkedIn (`/rest/posts`), Pinterest (`v5`), X (`v2` with explicit pay-per-use opt-in), and zero-cost Manual Publishing (`Copy Content` + `Download Media` + `Mark as Published`).
+- **OAuth 2.0 / PKCE & Security:** Single-use hashed `OAuthStateSession`, Fernet secret storage, `TrustedPublisherHttpClient` HTTPS host allowlist, Pillow image normalization preserving originals, and 24-hour tokenized `/api/v1/public-media/{token}` delivery.
+- **Durable Publishing & Scheduling:** 11-point preflight verification, MySQL `SELECT ... FOR UPDATE` job claiming, timeout -> `VerificationRequired` reconciliation, aaPanel Cron (`python -m app.cli run-due-publishes`), FullCalendar Standard monthly/weekly/daily UI (`/publishing-calendar`), Connected Accounts (`/connected-accounts`), and permanent `publication_records` history + CSV export.

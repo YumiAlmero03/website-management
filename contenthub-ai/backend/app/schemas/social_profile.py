@@ -55,8 +55,16 @@ class SocialProfileCreateRequest(BaseModel):
     publishing_method: str = Field(default="manual", max_length=24)
     generation_enabled: bool = True
     automatic_generation_enabled: bool = False
-    # External auto-publishing remains unavailable in Phase 3
+    # External auto-publishing remains disabled by default
     auto_publish_enabled: bool = False
+    publishing_enabled: bool = True
+    display_timezone: str | None = Field(default=None, max_length=64)
+    preferred_publishing_days: list[str] = Field(default_factory=list)
+    preferred_publishing_times: list[str] = Field(default_factory=list)
+    daily_publishing_limit: int | None = Field(default=None, ge=1, le=200)
+    min_interval_minutes: int | None = Field(default=None, ge=1, le=10080)
+    require_approval_before_publish: bool = True
+    default_media_required: bool = False
     custom_language: str | None = Field(default=None, max_length=32)
     writing_tone: str | None = Field(default=None, max_length=120)
     platform_ai_instructions: str | None = Field(default=None, max_length=5000)
@@ -81,6 +89,17 @@ class SocialProfileUpdateRequest(BaseModel):
     generation_enabled: bool | None = None
     automatic_generation_enabled: bool | None = None
     auto_publish_enabled: bool | None = None
+    publishing_enabled: bool | None = None
+    display_timezone: str | None = Field(default=None, max_length=64)
+    clear_display_timezone: bool = False
+    preferred_publishing_days: list[str] | None = None
+    preferred_publishing_times: list[str] | None = None
+    daily_publishing_limit: int | None = Field(default=None, ge=1, le=200)
+    clear_daily_publishing_limit: bool = False
+    min_interval_minutes: int | None = Field(default=None, ge=1, le=10080)
+    clear_min_interval_minutes: bool = False
+    require_approval_before_publish: bool | None = None
+    default_media_required: bool | None = None
     custom_language: str | None = Field(default=None, max_length=32)
     clear_custom_language: bool = False
     writing_tone: str | None = Field(default=None, max_length=120)
@@ -115,6 +134,27 @@ class SocialProfileResponse(BaseModel):
     automatic_generation_enabled: bool
     auto_publish_enabled: bool = False
     auto_publish_available: bool = False
+    publishing_enabled: bool = True
+    display_timezone: str | None = None
+    effective_timezone: str = "Asia/Manila"
+    preferred_publishing_days: list[str] = Field(default_factory=list)
+    preferred_publishing_times: list[str] = Field(default_factory=list)
+    daily_publishing_limit: int | None = None
+    min_interval_minutes: int | None = None
+    require_approval_before_publish: bool = True
+    default_media_required: bool = False
+    connection_status: str = "not_connected"
+    granted_permissions: list[str] = Field(default_factory=list)
+    missing_permissions: list[str] = Field(default_factory=list)
+    publishing_eligibility_status: str = "unknown"
+    publishing_eligibility_reason: str | None = None
+    target_resource_id: str | None = None
+    target_resource_name: str | None = None
+    allow_paid_publishing: bool = False
+    last_verified_at: datetime | None = None
+    last_published_at: datetime | None = None
+    last_connection_error: str | None = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
     custom_language: str | None = None
     effective_language: str = "en"
     writing_tone: str | None = None

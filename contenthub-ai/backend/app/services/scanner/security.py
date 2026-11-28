@@ -268,6 +268,7 @@ class SafeHttpFetcher:
         max_bytes: int | None = None,
         timeout_seconds: float | None = None,
         max_retries: int | None = None,
+        stop_on_redirect: bool = False,
     ) -> FetchedResponse:
         byte_limit = max_bytes or self.settings.scanner_max_response_bytes
         timeout = timeout_seconds or self.settings.scanner_request_timeout_seconds
@@ -283,6 +284,7 @@ class SafeHttpFetcher:
                     accept=accept,
                     max_bytes=byte_limit,
                     timeout_seconds=timeout,
+                    stop_on_redirect=stop_on_redirect,
                 )
             except (SSRFBlockedError, ResponseTooLargeError):
                 raise
@@ -304,6 +306,7 @@ class SafeHttpFetcher:
         accept: str | None,
         max_bytes: int,
         timeout_seconds: float,
+        stop_on_redirect: bool = False,
     ) -> FetchedResponse:
         current_url = url
         redirects_remaining = self.settings.scanner_max_redirects
@@ -319,6 +322,7 @@ class SafeHttpFetcher:
                         last_modified=last_modified,
                         accept=accept,
                         max_bytes=max_bytes,
+                        stop_on_redirect=stop_on_redirect,
                     )
                     if isinstance(outcome, str):
                         if redirects_remaining <= 0:
@@ -348,6 +352,7 @@ class SafeHttpFetcher:
                     accept=accept,
                     max_bytes=max_bytes,
                     validated_target=target,
+                    stop_on_redirect=stop_on_redirect,
                 )
             except (httpx.TimeoutException, httpx.TransportError):
                 self._drop_pooled_clients(target.hostname)
@@ -356,8 +361,7 @@ class SafeHttpFetcher:
             if isinstance(outcome, str):
                 if redirects_remaining <= 0:
                     raise ScannerError(
-                        "Exceeded maximum redirects "
-                        f"({self.settings.scanner_max_redirects})."
+                        f"Exceeded maximum redirects ({self.settings.scanner_max_redirects})."
                     )
                 redirects_remaining -= 1
                 current_url = outcome
@@ -375,6 +379,7 @@ class SafeHttpFetcher:
         accept: str | None,
         max_bytes: int,
         validated_target: ValidatedTarget | None = None,
+        stop_on_redirect: bool = False,
     ) -> FetchedResponse | str:
         target = validated_target or validate_outbound_url(
             current_url,
@@ -408,8 +413,14 @@ class SafeHttpFetcher:
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = norm_headers.get("location")
                 if not location:
-                    raise ScannerError(
-                        f"Redirect without Location header from {current_url}."
+                    raise ScannerError(f"Redirect without Location header from {current_url}.")
+                if stop_on_redirect:
+                    return FetchedResponse(
+                        url=original_url,
+                        final_url=urljoin(current_url, location.strip()),
+                        status_code=response.status_code,
+                        headers=norm_headers,
+                        content=b"",
                     )
                 return urljoin(current_url, location.strip())
 

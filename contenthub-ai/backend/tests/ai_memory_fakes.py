@@ -101,7 +101,14 @@ class InMemorySocialProfileRepository:
     def create(self, data: dict[str, Any]) -> SocialProfile:
         self._seq += 1
         now = utc_now_naive()
-        row = SocialProfile(id=self._seq, **data, created_at=now, updated_at=now)
+        defaults: dict[str, Any] = {
+            "publishing_enabled": True,
+            "require_approval_before_publish": True,
+            "default_media_required": False,
+            "publishing_eligibility_status": "unknown",
+        }
+        defaults.update(data)
+        row = SocialProfile(id=self._seq, **defaults, created_at=now, updated_at=now)
         self._profiles[row.id] = row
         return row
 
@@ -564,6 +571,9 @@ class InMemoryAiRepository:
         self._logs.append(row)
         return row
 
+    def get_log_by_id(self, log_id: int) -> AiGenerationLog | None:
+        return next((row for row in self._logs if row.id == log_id), None)
+
     def list_logs(
         self,
         *,
@@ -571,6 +581,7 @@ class InMemoryAiRepository:
         provider_id: int | None = None,
         task_type: str | None = None,
         status: str | None = None,
+        model_search: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[AiGenerationLog], int]:
@@ -583,6 +594,8 @@ class InMemoryAiRepository:
             rows = [r for r in rows if r.task_type == task_type]
         if status:
             rows = [r for r in rows if r.status == status]
+        if model_search:
+            rows = [r for r in rows if model_search.casefold() in r.model_name.casefold()]
         total = len(rows)
         start = (page - 1) * page_size
         return rows[start : start + page_size], total
@@ -606,7 +619,12 @@ class InMemorySocialPostRepository:
         social_profile_id: int | None = None,
         platform_id: int | None = None,
         status: str | None = None,
+        publishing_status: str | None = None,
+        view: str | None = None,
         website_content_id: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        search: str | None = None,
         page: int = 1,
         page_size: int = 25,
     ) -> tuple[list[SocialPost], int]:
@@ -621,6 +639,67 @@ class InMemorySocialPostRepository:
             rows = [r for r in rows if r.website_content_id == website_content_id]
         if status and status != "all":
             rows = [r for r in rows if r.status == status]
+        if publishing_status and publishing_status != "all":
+            rows = [r for r in rows if r.publishing_status == publishing_status]
+        if view and view != "all":
+            if view == "drafts":
+                rows = [r for r in rows if r.status != "archived"]
+            elif view == "pending_review":
+                rows = [r for r in rows if r.status == "pending_review"]
+            elif view == "approved":
+                rows = [
+                    r
+                    for r in rows
+                    if r.status == "approved"
+                    and r.publishing_status in {"unscheduled", "approved", "cancelled"}
+                ]
+            elif view == "scheduled":
+                rows = [
+                    r for r in rows if r.publishing_status in {"scheduled", "queued", "deferred"}
+                ]
+            elif view == "publishing":
+                rows = [
+                    r
+                    for r in rows
+                    if r.publishing_status in {"publishing", "verification_required"}
+                ]
+            elif view == "published":
+                rows = [
+                    r
+                    for r in rows
+                    if r.publishing_status in {"published", "manually_published"}
+                ]
+            elif view == "failed":
+                rows = [
+                    r
+                    for r in rows
+                    if r.publishing_status == "failed" or r.status == "generation_failed"
+                ]
+            elif view == "manual_publishing":
+                rows = [
+                    r
+                    for r in rows
+                    if r.status == "approved"
+                    and r.publishing_status
+                    in {"unscheduled", "approved", "manually_published", "cancelled"}
+                ]
+            elif view == "archived":
+                rows = [r for r in rows if r.status == "archived"]
+        if date_from is not None:
+            df = date_from.replace(tzinfo=None)
+            rows = [r for r in rows if (r.published_at or r.scheduled_for or r.created_at) >= df]
+        if date_to is not None:
+            dt = date_to.replace(tzinfo=None)
+            rows = [r for r in rows if (r.published_at or r.scheduled_for or r.created_at) <= dt]
+        if search and search.strip():
+            needle = search.strip().lower()
+            rows = [
+                r
+                for r in rows
+                if needle in (r.caption or "").lower()
+                or needle in (r.title or "").lower()
+                or needle in (r.source_url or "").lower()
+            ]
         rows.sort(key=lambda r: -r.id)
         total = len(rows)
         start = (page - 1) * page_size
@@ -641,15 +720,33 @@ class InMemorySocialPostRepository:
         if platform_id is not None:
             rows = [r for r in rows if r.platform_id == platform_id]
         counts: dict[str, int] = {}
+        pub_counts: dict[str, int] = {}
         for r in rows:
             counts[r.status] = counts.get(r.status, 0) + 1
+            pub_counts[r.publishing_status] = pub_counts.get(r.publishing_status, 0) + 1
+        archived = counts.get("archived", 0)
         return {
             "total_drafts": len(rows),
+            "drafts": len(rows) - archived,
             "pending_review": counts.get("pending_review", 0),
             "approved": counts.get("approved", 0),
             "rejected": counts.get("rejected", 0),
             "generation_failed": counts.get("generation_failed", 0),
-            "archived": counts.get("archived", 0),
+            "archived": archived,
+            "scheduled": (
+                pub_counts.get("scheduled", 0)
+                + pub_counts.get("queued", 0)
+                + pub_counts.get("deferred", 0)
+            ),
+            "publishing": (
+                pub_counts.get("publishing", 0) + pub_counts.get("verification_required", 0)
+            ),
+            "published": (
+                pub_counts.get("published", 0) + pub_counts.get("manually_published", 0)
+            ),
+            "manually_published": pub_counts.get("manually_published", 0),
+            "failed_publishing": pub_counts.get("failed", 0),
+            "verification_required": pub_counts.get("verification_required", 0),
         }
 
     def get_by_id(self, post_id: int) -> SocialPost | None:
@@ -689,8 +786,16 @@ class InMemorySocialPostRepository:
     ) -> SocialPost:
         self._seq += 1
         now = utc_now_naive()
+        defaults: dict[str, Any] = {
+            "publishing_status": (
+                "pending_approval" if data.get("status") == "pending_review" else "unscheduled"
+            ),
+            "verification_status": "unverified",
+            "is_manually_edited": False,
+        }
+        defaults.update(data)
         row = SocialPost(
-            id=self._seq, **data, current_version=1, created_at=now, updated_at=now
+            id=self._seq, **defaults, current_version=1, created_at=now, updated_at=now
         )
         self._posts[row.id] = row
         self._rev_seq += 1
@@ -756,6 +861,12 @@ class InMemorySocialPostRepository:
         revs = [r for r in self._revs if r.social_post_id == post_id]
         revs.sort(key=lambda r: -r.version_number)
         return revs
+
+    def get_revision_by_id(self, revision_id: int) -> SocialPostRevision | None:
+        for r in self._revs:
+            if r.id == revision_id:
+                return r
+        return None
 
 
 class FakeGeminiProviderClient:

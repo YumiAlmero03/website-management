@@ -9,14 +9,17 @@ from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
 from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
 from app.repositories.content_repo import ContentRepositoryProtocol
 from app.repositories.keyword_approval_repo import KeywordApprovalRepositoryProtocol
+from app.repositories.publishing_repo import PublishingRepositoryProtocol
 from app.repositories.scan_log_repo import ScanLogRepositoryProtocol
 from app.repositories.session_repo import SessionRepositoryProtocol
 from app.repositories.settings_repo import SettingsRepositoryProtocol
+from app.repositories.social_post_repo import SocialPostRepositoryProtocol
 from app.repositories.website_repo import WebsiteRepositoryProtocol
 from app.schemas.dashboard import (
     DashboardSummaryResponse,
     Phase1Counts,
     Phase2Metrics,
+    Phase4PublishingMetrics,
     PhaseModuleStatus,
 )
 from app.schemas.logs import ActivityLogItem
@@ -85,15 +88,17 @@ ROADMAP_MODULES: tuple[PhaseModuleStatus, ...] = (
         label="Connected Accounts",
         route="/connected-accounts",
         phase=4,
-        status="not_implemented",
-        summary="Official publisher adapters (WordPress, Facebook, Blogger, Manual).",
+        status="active",
+        summary=(
+            "OAuth & API connectivity, permission checks, and manual publishing fallbacks."
+        ),
     ),
     PhaseModuleStatus(
         key="publishing_calendar",
         label="Publishing Calendar",
         route="/publishing-calendar",
         phase=4,
-        status="not_implemented",
+        status="active",
         summary="FullCalendar Standard monthly/weekly/daily scheduling.",
     ),
     PhaseModuleStatus(
@@ -148,6 +153,8 @@ class DashboardService:
         content_repo: ContentRepositoryProtocol,
         scan_log_repo: ScanLogRepositoryProtocol,
         keyword_approval_repo: KeywordApprovalRepositoryProtocol | None = None,
+        publishing_repo: PublishingRepositoryProtocol | None = None,
+        social_post_repo: SocialPostRepositoryProtocol | None = None,
     ) -> None:
         self.settings = settings
         self.health_service = health_service
@@ -160,6 +167,8 @@ class DashboardService:
         self.content_repo = content_repo
         self.scan_log_repo = scan_log_repo
         self.keyword_approval_repo = keyword_approval_repo
+        self.pub_repo = publishing_repo
+        self.post_repo = social_post_repo
 
     def get_summary(
         self,
@@ -283,10 +292,61 @@ class DashboardService:
             for row in recent_rows
         ]
 
+        month_start_utc = (
+            datetime.now(tz)
+            .replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+        )
+        post_stats = (
+            self.post_repo.get_stats(website_id=website_id)
+            if self.post_repo is not None
+            else {}
+        )
+        pub_today = (
+            self.pub_repo.count_published_in_window(
+                start_utc=utc_day_start.replace(tzinfo=None), website_id=website_id
+            )
+            if self.pub_repo is not None
+            else 0
+        )
+        pub_month = (
+            self.pub_repo.count_published_in_window(
+                start_utc=month_start_utc, website_id=website_id
+            )
+            if self.pub_repo is not None
+            else 0
+        )
+        attention_count = 0
+        expiring_count = 0
+        if self.pub_repo is not None:
+            from datetime import timedelta
+
+            now_naive = utc_now().replace(tzinfo=None)
+            for conn in self.pub_repo.list_connections(website_id=website_id):
+                if conn.connection_status in {
+                    "expired",
+                    "error",
+                    "missing_permissions",
+                    "restricted",
+                }:
+                    attention_count += 1
+                if conn.token_expires_at is not None:
+                    if conn.token_expires_at <= now_naive:
+                        if conn.connection_status not in {
+                            "expired",
+                            "error",
+                            "missing_permissions",
+                            "restricted",
+                        }:
+                            attention_count += 1
+                    elif conn.token_expires_at <= now_naive + timedelta(days=7):
+                        expiring_count += 1
+
         return DashboardSummaryResponse(
             generated_at=now,
             timezone=tz_name,
-            current_phase=3,
+            current_phase=4,
             filtered_website_id=website_id,
             filtered_category_id=category_id,
             database=db_health,
@@ -317,6 +377,17 @@ class DashboardService:
                 websites_due_for_scan=websites_due,
                 pending_content_approvals=pending_content_approvals,
                 approved_keywords_count=approved_keywords_count,
+            ),
+            phase4_metrics=Phase4PublishingMetrics(
+                drafts_awaiting_review=int(post_stats.get("pending_review", 0)),
+                approved_posts=int(post_stats.get("approved", 0)),
+                scheduled_posts=int(post_stats.get("scheduled", 0)),
+                published_today=pub_today,
+                published_this_month=pub_month,
+                failed_publications=int(post_stats.get("failed_publishing", 0)),
+                verification_required=int(post_stats.get("verification_required", 0)),
+                accounts_requiring_attention=attention_count,
+                expiring_credentials=expiring_count,
             ),
             recent_scans=recent_scans,
             modules=list(ROADMAP_MODULES),

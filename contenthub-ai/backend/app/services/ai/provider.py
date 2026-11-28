@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+GENERATION_PROBE_PROMPT = "Reply with OK."
+
 
 @dataclass(frozen=True)
 class ProviderModelDescriptor:
@@ -24,6 +26,7 @@ class ProviderTestResult:
     discovered_models: list[ProviderModelDescriptor] = field(default_factory=list)
     error_detail: str | None = None
     generation_probe_tokens: int | None = None
+    generation_result: ProviderGenerationResult | None = None
 
 
 @dataclass(frozen=True)

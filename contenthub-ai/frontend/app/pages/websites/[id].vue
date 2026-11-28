@@ -51,12 +51,26 @@ const urlRules = ref<WebsiteUrlRule[]>([])
 const scanLogs = ref<ScanLog[]>([])
 const websiteContents = ref<ContentListItem[]>([])
 const contentTabFilter = ref<string>('all')
+const keywordBank = shallowRef<string[]>([])
+const keywordSearch = ref('')
+const keywordPage = ref(1)
+const keywordPageSize = 100
+const filteredKeywords = computed(() => {
+  const search = keywordSearch.value.trim().toLowerCase().replace(/\s+/g, ' ')
+  return search ? keywordBank.value.filter(keyword => keyword.toLowerCase().includes(search)) : keywordBank.value
+})
+const visibleKeywords = computed(() => {
+  const start = (keywordPage.value - 1) * keywordPageSize
+  return filteredKeywords.value.slice(start, start + keywordPageSize)
+})
 
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
-const activeTab = ref<
-  'overview' | 'content' | 'scanner' | 'history' | 'social_profiles' | 'ai_settings' | 'settings'
->('overview')
+type Section = 'content' | 'scanner' | 'history' | 'settings' | 'keyword_bank'
+type WebsiteTab = Section | 'overview' | 'social_profiles' | 'ai_settings'
+const activeTab = ref<WebsiteTab>('overview')
+const sections: Section[] = ['content', 'scanner', 'history', 'settings', 'keyword_bank']
+const sectionStates = reactive(new Map<Section, { loading: boolean; error: string | null }>())
 const triggeringScan = ref(false)
 const testingConnectivity = ref(false)
 const discoveringSources = ref(false)
@@ -118,7 +132,9 @@ const settingsForm = ref({
   auto_scan: true,
 })
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let pollVersion = 0
+let workspaceVersion = 0
 
 const activeScan = computed(() =>
   scanLogs.value.find((s) => s.status === 'pending' || s.status === 'processing') || null,
@@ -179,8 +195,9 @@ function syncSettingsForm(site: Website) {
 }
 
 function stopPolling() {
+  pollVersion++
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearTimeout(pollTimer)
     pollTimer = null
   }
 }
@@ -193,79 +210,132 @@ function ensurePolling() {
   if (pollTimer) {
     return
   }
-  pollTimer = setInterval(async () => {
+  const id = websiteId.value
+  const version = pollVersion
+  pollTimer = setTimeout(async () => {
     try {
-      const [siteData, logsData] = await Promise.all([
-        request<Website>(`/api/v1/websites/${websiteId.value}`),
-        request<ScanLogListResponse>(`/api/v1/websites/${websiteId.value}/scan-logs`, {
-          query: { page: 1, page_size: 20 },
-        }),
-      ])
-      website.value = siteData
+      const logsData = await fetchScanLogs(id)
+      if (version !== pollVersion) return
+      pollTimer = null
       scanLogs.value = logsData.items
-      if (!activeScan.value) {
-        stopPolling()
-        await Promise.all([loadWebsiteContents(), loadSources()])
+      if (activeScan.value) {
+        ensurePolling()
+      }
+      else {
+        const siteData = await request<Website>(`/api/v1/websites/${id}`)
+        if (version !== pollVersion) return
+        website.value = siteData
+        for (const section of ['content', 'scanner', 'keyword_bank'] as const) {
+          sectionStates.delete(section)
+        }
+        loadActiveSection()
       }
     }
     catch {
-      stopPolling()
+      if (version === pollVersion) stopPolling()
     }
   }, 2000)
 }
 
-async function loadSources() {
-  sources.value = await request<WebsiteDiscoverySource[]>(`/api/v1/websites/${websiteId.value}/sources`)
-}
-
-async function loadRules() {
-  urlRules.value = await request<WebsiteUrlRule[]>(`/api/v1/websites/${websiteId.value}/rules`)
-}
-
-async function loadWebsiteContents() {
-  const res = await request<ContentListResponse>('/api/v1/contents', {
-    query: {
-      website_id: websiteId.value,
-      tab: contentTabFilter.value,
-      page: 1,
-      page_size: 25,
-    },
+function fetchScanLogs(id: number) {
+  return request<ScanLogListResponse>(`/api/v1/websites/${id}/scan-logs`, {
+    query: { page: 1, page_size: 20 },
   })
-  websiteContents.value = res.items
+}
+
+async function loadSection(section: Section, force = false) {
+  if (!force && sectionStates.has(section)) return
+  const state = reactive({ loading: true, error: null as string | null })
+  sectionStates.set(section, state)
+  const id = websiteId.value
+  const root = `/api/v1/websites/${id}`
+  const isCurrent = () => sectionStates.get(section) === state
+  try {
+    switch (section) {
+      case 'content': {
+        const res = await request<ContentListResponse>('/api/v1/contents', {
+          query: { website_id: id, tab: contentTabFilter.value, page: 1, page_size: 25 },
+        })
+        if (isCurrent()) websiteContents.value = res.items
+        break
+      }
+      case 'scanner': {
+        const [sourceData, ruleData] = await Promise.all([
+          request<WebsiteDiscoverySource[]>(`${root}/sources`),
+          request<WebsiteUrlRule[]>(`${root}/rules`),
+        ])
+        if (isCurrent()) {
+          sources.value = sourceData
+          urlRules.value = ruleData
+        }
+        break
+      }
+      case 'history': {
+        const res = await fetchScanLogs(id)
+        if (isCurrent()) {
+          scanLogs.value = res.items
+          ensurePolling()
+        }
+        break
+      }
+      case 'settings': {
+        const res = await request<WebsiteCategoryListResponse>('/api/v1/website-categories', {
+          query: { include_archived: false },
+        })
+        if (isCurrent()) categories.value = res.items
+        break
+      }
+      case 'keyword_bank': {
+        const res = await request<string[]>(`${root}/keyword-bank`)
+        if (isCurrent()) {
+          keywordBank.value = res
+          keywordPage.value = 1
+        }
+        break
+      }
+    }
+  }
+  catch (err) {
+    state.error = extractErrorMessage(err, 'Could not load this tab.')
+  }
+  finally {
+    state.loading = false
+  }
+}
+
+const activeSection = computed(() =>
+  sections.find(section => section === activeTab.value),
+)
+const activeSectionState = computed(() =>
+  activeSection.value ? sectionStates.get(activeSection.value) : undefined,
+)
+
+function loadActiveSection(force = false) {
+  if (activeSection.value) void loadSection(activeSection.value, force)
 }
 
 async function loadAll() {
+  const version = ++workspaceVersion
+  stopPolling()
+  sectionStates.clear()
+  scanLogs.value = []
   loading.value = true
   errorMessage.value = null
   try {
-    const [siteData, catsData, srcData, rulesData, logsData, contentsData] = await Promise.all([
-      request<Website>(`/api/v1/websites/${websiteId.value}`),
-      request<WebsiteCategoryListResponse>('/api/v1/website-categories', {
-        query: { include_archived: false },
-      }),
-      request<WebsiteDiscoverySource[]>(`/api/v1/websites/${websiteId.value}/sources`),
-      request<WebsiteUrlRule[]>(`/api/v1/websites/${websiteId.value}/rules`),
-      request<ScanLogListResponse>(`/api/v1/websites/${websiteId.value}/scan-logs`, {
-        query: { page: 1, page_size: 20 },
-      }),
-      request<ContentListResponse>('/api/v1/contents', {
-        query: { website_id: websiteId.value, tab: contentTabFilter.value, page: 1, page_size: 25 },
-      }),
-    ])
+    const siteData = await request<Website>(`/api/v1/websites/${websiteId.value}`)
+    if (version !== workspaceVersion) return
     website.value = siteData
-    categories.value = catsData.items
-    sources.value = srcData
-    urlRules.value = rulesData
-    scanLogs.value = logsData.items
-    websiteContents.value = contentsData.items
     syncSettingsForm(siteData)
-    ensurePolling()
+    void loadSection('history')
+    loadActiveSection()
   }
   catch (err) {
-    errorMessage.value = extractErrorMessage(err, 'Failed to load website details.')
+    if (version === workspaceVersion) {
+      errorMessage.value = extractErrorMessage(err, 'Failed to load website details.')
+    }
   }
   finally {
-    loading.value = false
+    if (version === workspaceVersion) loading.value = false
   }
 }
 
@@ -528,7 +598,9 @@ async function saveWebsiteSettings() {
     website.value = updated
     syncSettingsForm(updated)
     toast.add({ title: 'Website & brand settings saved', color: 'success' })
-    await Promise.all([loadSources(), uiStore.refreshGlobalSelectors()])
+    sectionStates.delete('scanner')
+    sectionStates.delete('keyword_bank')
+    await uiStore.refreshGlobalSelectors()
   }
   catch (err) {
     toast.add({
@@ -543,7 +615,15 @@ async function saveWebsiteSettings() {
 }
 
 watch(contentTabFilter, () => {
-  void loadWebsiteContents()
+  if (website.value && !loading.value) void loadSection('content', true)
+})
+
+watch(activeTab, () => {
+  if (website.value && !loading.value) loadActiveSection()
+})
+
+watch(keywordSearch, () => {
+  keywordPage.value = 1
 })
 
 watch(inspectFilter, () => {
@@ -551,7 +631,10 @@ watch(inspectFilter, () => {
 })
 
 watch(websiteId, () => {
-  stopPolling()
+  website.value = null
+  contentTabFilter.value = 'all'
+  keywordSearch.value = ''
+  keywordBank.value = []
   void loadAll()
 })
 
@@ -563,11 +646,16 @@ onMounted(() => {
   else if (qTab === 'ai-settings' || qTab === 'ai_settings') {
     activeTab.value = 'ai_settings'
   }
+  else if (qTab === 'keyword-bank' || qTab === 'keyword_bank') {
+    activeTab.value = 'keyword_bank'
+  }
   void loadAll()
 })
 
 onUnmounted(() => {
   stopPolling()
+  workspaceVersion++
+  sectionStates.clear()
 })
 </script>
 
@@ -730,12 +818,12 @@ onUnmounted(() => {
     />
 
     <template v-else-if="website">
-      <!-- 7 Structured Tabs -->
       <div class="flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800">
         <button
           v-for="tab in [
             { id: 'overview', label: 'Overview' },
             { id: 'content', label: `Content (${website.content_counts.total_discovered})` },
+            { id: 'keyword_bank', label: 'Keyword Bank' },
             { id: 'scanner', label: 'Scanner & URL Rules' },
             { id: 'history', label: `Scan History (${scanLogs.length})` },
             { id: 'social_profiles', label: 'Social Profiles' },
@@ -756,9 +844,21 @@ onUnmounted(() => {
         </button>
       </div>
 
+      <AppErrorState
+        v-if="activeTab !== 'content' && activeSectionState?.error"
+        title="Could not load this tab"
+        :message="activeSectionState.error"
+        retryable
+        @retry="loadActiveSection(true)"
+      />
+      <USkeleton
+        v-else-if="activeTab !== 'content' && activeSectionState?.loading"
+        class="h-48 w-full"
+      />
+
       <!-- TAB 1: OVERVIEW -->
       <div
-        v-if="activeTab === 'overview'"
+        v-else-if="activeTab === 'overview'"
         class="space-y-6"
       >
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
@@ -926,7 +1026,15 @@ onUnmounted(() => {
           </UButton>
         </div>
 
-        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <AppErrorState
+          v-if="activeSectionState?.error"
+          title="Could not load content"
+          :message="activeSectionState.error"
+          retryable
+          @retry="loadActiveSection(true)"
+        />
+        <USkeleton v-else-if="activeSectionState?.loading" class="h-48 w-full" />
+        <div v-else class="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <table class="min-w-full divide-y divide-slate-200 text-left text-xs dark:divide-slate-800">
             <thead class="bg-slate-50 text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
               <tr>
@@ -976,6 +1084,51 @@ onUnmounted(() => {
           </table>
         </div>
       </div>
+
+      <section
+        v-else-if="activeTab === 'keyword_bank'"
+        class="space-y-4 rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-semibold">Keyword Bank</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+              Keywords from this website’s content and manually added entries.
+            </p>
+          </div>
+          <UInput
+            v-model="keywordSearch"
+            type="search"
+            aria-label="Search keyword bank"
+            placeholder="Search keywords"
+            class="w-full sm:w-64"
+          />
+        </div>
+        <p aria-live="polite" class="text-xs text-slate-500 dark:text-slate-400">
+          {{ filteredKeywords.length.toLocaleString() }} of {{ keywordBank.length.toLocaleString() }} keywords
+        </p>
+        <div v-if="visibleKeywords.length" class="flex flex-wrap gap-2">
+          <UBadge
+            v-for="keyword in visibleKeywords"
+            :key="keyword"
+            color="neutral"
+            variant="subtle"
+            class="max-w-full whitespace-normal break-words rounded-full px-2.5"
+          >
+            {{ keyword }}
+          </UBadge>
+        </div>
+        <p v-else class="text-sm text-slate-500 dark:text-slate-400">
+          {{ keywordBank.length ? 'No keywords match your search.' : 'No keywords yet. They’ll appear after content extraction or when you add them in Settings.' }}
+        </p>
+        <UPagination
+          v-if="filteredKeywords.length > keywordPageSize"
+          v-model:page="keywordPage"
+          :total="filteredKeywords.length"
+          :items-per-page="keywordPageSize"
+          size="sm"
+        />
+      </section>
 
       <!-- TAB 3: SCANNER & URL RULES -->
       <div
@@ -1331,13 +1484,13 @@ onUnmounted(() => {
             <UInput v-model="settingsForm.target_keywords_text" placeholder="comma-separated" />
           </div>
           <div class="md:col-span-2">
-            <label class="mb-1 block font-medium">Keyword Bank</label>
+            <label class="mb-1 block font-medium">Manual Keyword Bank Entries</label>
             <UTextarea
               v-model="settingsForm.keyword_bank_text"
               :rows="3"
               placeholder="Reference keywords for new blogs/articles (comma or newline separated)"
             />
-            <p class="mt-1 text-xs text-slate-500">Used as keyword suggestions when creating new content.</p>
+            <p class="mt-1 text-xs text-slate-500">These appear in the Keyword Bank alongside keywords from this website’s content.</p>
           </div>
           <div>
             <label class="mb-1 block font-medium">Default Hashtags</label>
@@ -1549,7 +1702,7 @@ onUnmounted(() => {
                   variant="subtle"
                   size="xs"
                 >
-                  {{ item.status }}{{ item.http_status ? ` (${item.http_status})` : '' }}
+                  {{ item.failure_reason?.startsWith('ignored_') ? 'ignored' : item.status }}{{ item.http_status ? ` (${item.http_status})` : '' }}
                 </UBadge>
               </div>
               <p class="mt-1 text-[11px] text-slate-500">

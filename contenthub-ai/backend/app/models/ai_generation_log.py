@@ -11,8 +11,10 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     text,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import MYSQL_TABLE_ARGS, Base, utc_now_naive
@@ -79,6 +81,9 @@ class AiGenerationLog(Base):
     truncation_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    encrypted_prompt_exchange: Mapped[str | None] = mapped_column(
+        Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=True, deferred=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(),
         nullable=False,

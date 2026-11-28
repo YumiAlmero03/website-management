@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Query, Request, status
@@ -35,7 +36,12 @@ def list_social_posts(
     social_profile_id: int | None = Query(default=None, ge=1),
     platform_id: int | None = Query(default=None, ge=1),
     status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    publishing_status: str | None = Query(default=None, max_length=32),
+    view: str | None = Query(default=None, max_length=32),
     website_content_id: int | None = Query(default=None, ge=1),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
 ) -> SocialPostListResponse:
@@ -44,7 +50,12 @@ def list_social_posts(
         social_profile_id=social_profile_id,
         platform_id=platform_id,
         status=status_filter,
+        publishing_status=publishing_status,
+        view=view,
         website_content_id=website_content_id,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
         page=page,
         page_size=page_size,
     )

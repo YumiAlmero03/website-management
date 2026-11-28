@@ -16,6 +16,7 @@ from app.services.ai.model_registry import (
     sort_models_free_first,
 )
 from app.services.ai.provider import (
+    GENERATION_PROBE_PROMPT,
     ProviderGenerationResult,
     ProviderModelDescriptor,
     ProviderTestResult,
@@ -24,6 +25,26 @@ from app.services.ai.provider import (
 
 def _sanitized_error_message(exc: Exception) -> str:
     return redact_text(str(exc))[:450] or type(exc).__name__
+
+
+def _interaction_result(
+    interaction: Any, model_name: str, started: float
+) -> ProviderGenerationResult:
+    usage = getattr(interaction, "usage", None)
+    input_tokens = getattr(usage, "total_input_tokens", None)
+    output_tokens = getattr(usage, "total_output_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+    return ProviderGenerationResult(
+        raw_text=str(getattr(interaction, "output_text", None) or "").strip(),
+        model_name=model_name,
+        latency_ms=int((time.monotonic() - started) * 1000),
+        measured_input_tokens=int(input_tokens) if input_tokens is not None else None,
+        measured_output_tokens=int(output_tokens) if output_tokens is not None else None,
+        total_measured_tokens=int(total_tokens) if total_tokens is not None else None,
+        raw_usage_available=any(
+            value is not None for value in (input_tokens, output_tokens, total_tokens)
+        ),
+    )
 
 
 class GeminiSdkProvider:
@@ -154,21 +175,20 @@ class GeminiSdkProvider:
 
         available_names = {normalize_model_name(m.name) for m in models}
         model_available = target_model in available_names
-        probe_tokens: int | None = None
+        probe_result: ProviderGenerationResult | None = None
 
         if verify_generation and model_available:
             try:
                 client = self._create_client(api_key=api_key, timeout_seconds=timeout_seconds)
+                probe_started = time.monotonic()
                 interaction = client.interactions.create(
                     model=target_model,
-                    input="Reply with OK.",
+                    input=GENERATION_PROBE_PROMPT,
                     generation_config={"max_output_tokens": 8, "temperature": 0.0},
                     store=False,
                     timeout=float(timeout_seconds),
                 )
-                usage = getattr(interaction, "usage", None)
-                if usage is not None:
-                    probe_tokens = getattr(usage, "total_tokens", None)
+                probe_result = _interaction_result(interaction, target_model, probe_started)
             except Exception as exc:
                 latency = int((time.monotonic() - started) * 1000)
                 return ProviderTestResult(
@@ -192,7 +212,8 @@ class GeminiSdkProvider:
                 if model_available
                 else f"Connected, but selected model '{target_model}' was not in listed models."
             ),
-            generation_probe_tokens=probe_tokens,
+            generation_probe_tokens=probe_result.total_measured_tokens if probe_result else None,
+            generation_result=probe_result,
         )
 
     def count_tokens(
@@ -251,25 +272,7 @@ class GeminiSdkProvider:
         except Exception as exc:
             self._raise_mapped_sdk_error(exc)
 
-        latency_ms = int((time.monotonic() - started) * 1000)
-        raw_text = getattr(interaction, "output_text", None)
-        if not raw_text or not str(raw_text).strip():
+        result = _interaction_result(interaction, target_model, started)
+        if not result.raw_text:
             raise AiResponseValidationError("Gemini returned an empty response body.")
-
-        usage = getattr(interaction, "usage", None)
-        input_tokens = getattr(usage, "total_input_tokens", None) if usage else None
-        output_tokens = getattr(usage, "total_output_tokens", None) if usage else None
-        total_tokens = getattr(usage, "total_tokens", None) if usage else None
-        if total_tokens is None and input_tokens is not None and output_tokens is not None:
-            total_tokens = int(input_tokens) + int(output_tokens)
-
-        return ProviderGenerationResult(
-            raw_text=str(raw_text).strip(),
-            model_name=target_model,
-            latency_ms=latency_ms,
-            measured_input_tokens=int(input_tokens) if input_tokens is not None else None,
-            measured_output_tokens=int(output_tokens) if output_tokens is not None else None,
-            total_measured_tokens=int(total_tokens) if total_tokens is not None else None,
-            raw_usage_available=usage is not None
-            and (input_tokens is not None or output_tokens is not None),
-        )
+        return result

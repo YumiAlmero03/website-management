@@ -315,7 +315,8 @@ def extract_game_metadata(
     content: WebsiteContent,
     website: Website | None = None,
 ) -> tuple[str, str]:
-    structured = content.structured_data_json if isinstance(content.structured_data_json, dict) else {}
+    raw_structured = content.structured_data_json
+    structured = raw_structured if isinstance(raw_structured, dict) else {}
     brand = (
         str((website.brand_name if website and website.brand_name else None) or
             (website.name if website and website.name else "") or "")
@@ -368,7 +369,10 @@ def extract_game_metadata(
             ]
         )
         match = re.search(
-            r"(?:provider|developer|studio|software|publisher)\s*[:\-]\s*([A-Za-z0-9'&.+\- ]{2,45})",
+            (
+                r"(?:provider|developer|studio|software|publisher)"
+                r"\s*[:\-]\s*([A-Za-z0-9'&.+\- ]{2,45})"
+            ),
             text_blob,
             flags=re.I,
         )
@@ -649,6 +653,11 @@ def detect_cannibalization_warnings(
     if not norm or len(norm) < 2:
         return []
 
+    current_content = next(
+        (content for _, content in sibling_records if content.id == content_id), None
+    )
+    game_generic_terms = {"slot", "slots", "game", "games", "online", "play"}
+    game_tokens = set(norm.split()) - game_generic_terms
     warnings: list[CannibalizationMatchResponse] = []
     for sib_kw, sib_content in sibling_records:
         if sib_content.id == content_id or sib_content.is_excluded:
@@ -675,9 +684,24 @@ def detect_cannibalization_warnings(
             )
             continue
 
-        score = float(fuzz.token_set_ratio(norm, sib_norm))
+        both_games = bool(
+            current_content
+            and current_content.content_type == "game_page"
+            and sib_content.content_type == "game_page"
+        )
+        if both_games:
+            sibling_game_tokens = set(sib_norm.split()) - game_generic_terms
+            shared = game_tokens & sibling_game_tokens
+            # Shared generic words or a single name fragment do not identify the same game.
+            if not (game_tokens == sibling_game_tokens and game_tokens) and len(shared) < 2:
+                continue
+            score = float(fuzz.ratio(norm, sib_norm))
+        else:
+            score = float(fuzz.token_set_ratio(norm, sib_norm))
         # Guard against short words creating false overlap
-        if score >= 82.0 and (len(norm.split()) >= 2 or len(sib_norm.split()) >= 2):
+        if (score >= 82.0 or both_games) and (
+            len(norm.split()) >= 2 or len(sib_norm.split()) >= 2
+        ):
             warnings.append(
                 CannibalizationMatchResponse(
                     content_id=sib_content.id,
@@ -688,7 +712,7 @@ def detect_cannibalization_warnings(
                     approval_status=sib_kw.approval_status,
                     similarity_score=round(score, 1),
                     severity="medium",
-                    reason="Highly similar focus keyphrase used by another URL on this site.",
+                    reason="Possible cannibalization: another URL uses a related focus keyphrase.",
                 )
             )
 

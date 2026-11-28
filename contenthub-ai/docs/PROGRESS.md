@@ -1,9 +1,10 @@
 # ContentHub AI — Development Progress Tracker
 
 ## Current Phase
-- **Active Phase:** Phase 3 — Gemini AI Engine, Social Profiles & SEO Content Approval
-- **Status:** Complete — Ready for Review (stopped before Phase 4 per administrator instruction)
-- **Last Updated:** 2026-11-27
+- **Active Phase:** Phase 4 — Social Media Publishing, Account Connections & Calendar
+- **Status:** Complete — Ready for Review (stopped before Phase 5 per administrator instruction)
+- **Last Updated:** 2026-11-28
+- **Phase 3 Formal QA Audit:** **PASS** — see [docs/PHASE_3_VERIFICATION.md](./PHASE_3_VERIFICATION.md) (verified live Gemini `gemini-3.5-flash-lite`, live LocalAI `:8081` reasoning-model keyword refinement fix + offline fallback, isolated MySQL `8.0.45` E2E cache/draft/Resource Guardian flow, `86` backend tests + `22` Vitest tests + authenticated headless Chrome walkthrough).
 
 ## Completed Tasks
 ### Phase 1 — Project Foundation
@@ -11,6 +12,7 @@
 
 ### Phase 2 & Phase 2.1 — Website-Centric Monitoring, Discovery & Universal Content Library
 - **Merged Brand into Website Management (`20261127_0003`):** Website-owned brand profile, custom `website_categories`, isolated per-source conditional ETag/Last-Modified discovery caching, two-phase resumable scanning, deterministic URL classification + manual overrides, and 7-tab Universal Content Library (`/content-library`).
+- **Website workspace performance and Keyword Bank:** The overview loads independently from tab data, scan polling requests history, and content totals use SQL aggregates. The content list reuses keyword matches per website. The Keyword Bank combines manual and content keywords with search and paginated pills. Bygame's local 25-item content benchmark fell from about 15 seconds to under one second.
 
 ### Phase 3 — Gemini AI Engine, Social Profiles & SEO Content Approval
 - **Incremental Schema & Seeds (`20261127_0004` + `20261127_0005`):**
@@ -29,6 +31,8 @@
 - Engineering Lead review & sign-off before proceeding to **Phase 4 — Social Media Publishing**.
 
 ## Known Bugs / Limitations
+- **Phase 7 migration follow-up:** Historical offline Alembic SQL generation for migration `20261127_0003` can fail in an offline/no-MySQL environment; live upgrade/downgrade/re-upgrade verification remains the authoritative check and this limitation is tracked for Phase 7 hardening. Migration `20261128_0008` is included in the current live Alembic head chain.
+- Scan discovery keeps new URLs in scan items until extraction; Cloudflare email-protection links and HTTP redirects are recorded as ignored rather than added to the normal Content Library. Existing entries are excluded when encountered again. Scanner regression tests: 31 passed; frontend typecheck passed. Live MySQL tests were blocked by sandbox network permissions.
 - None in verified offline/mocked and live MySQL test coverage. Live Gemini connectivity was exercised against `generativelanguage.googleapis.com` where the workspace's placeholder `GEMINI_API_KEY` returned `400 INVALID_ARGUMENT (API_KEY_INVALID)` as handled cleanly by our error mapper; live Gemini text/draft generation outputs were verified using `FakeGeminiProviderClient` until a valid Gemini key is configured.
 
 ## Architectural Decisions
@@ -43,3 +47,19 @@
 - **Frontend Unit Tests (`cd frontend && npx vitest run`):** Passed (**6 test files, 15 tests** — `approval-ui`, `phase3`, `navigation`, `format`, `ui-store`, `auth-store`).
 - **Frontend Production Build (`cd frontend && npm run build`):** Passed (`✨ Build complete!` in 8.6s).
 - **Isolated Runtime SSR & Nitro Proxy Check (`:8108` FastAPI + `:3108` Built Nuxt -> `contenthub_ai_test`):** Verified login + CSRF, SSR `GET /content-approval` (`200`), `PATCH /api/v1/content-approvals/{id}/keywords` + `POST .../approve` for `game_page`, `GET /api/v1/contents/stats` (`game_page_count`), and `GET /api/v1/contents?tab=game_pages`.
+
+### Phase 4 — Social Media Publishing, OAuth Connections & Calendar Scheduling
+- **Migration & MySQL Schema (`20261128_0008` — Live MySQL 8.0.45 Verified):** Added `social_profile_connections`, `oauth_state_sessions`, `social_post_media`, `publishing_schedules`, `publishing_jobs`, `publishing_logs`, and `publication_records` (`InnoDB`, `utf8mb4`), plus publishing preference, eligibility, timezone, UTM, alternative caption, and status columns on `social_profiles` and `social_posts`.
+- **Official Publishing Adapters & Manual Workflow:** Implemented Priority 1 (`facebook` Meta Graph `v27.0`, `instagram` Graph `v27.0`, `google_business_profile` `v1`/`v4`, manual fallback) and Priority 2/3 (`threads`, `linkedin` `/rest/posts`, `pinterest` `v5`, `twitter` `v2` with explicit pay-per-use opt-in `allow_paid_publishing=false` default) behind `TrustedPublisherHttpClient` (HTTPS host allowlist).
+- **Preflight, Media Normalization & Durable Queue:** Implemented 11-point preflight verification (enforcing independent content, keyword, and draft revision approvals), material-edit approval invalidation + schedule cancellation, Pillow image resizing/conversion preserving original `media_assets` + 24-hour tokenized `/api/v1/public-media/{token}`, `SELECT ... FOR UPDATE` job claiming, ambiguous timeout `verification_required` reconciliation, permanent `publication_records` snapshots (`ON DELETE SET NULL`), CSV export, and CLI/cron workers (`run-publish-job`, `run-due-publishes`).
+- **Frontend Phase 4 Views (`frontend/`):** Implemented Connected Accounts (`/connected-accounts`), Publishing Calendar (`/publishing-calendar` via FullCalendar Standard `@fullcalendar/*@6.1.22` + `luxon`), full Phase 4 Social Publishing Hub (`/social-media` with 9 views, Edit/UTM/Media picker, Preflight Publish Confirm, Schedule/Cancel, Manual Checklist + Mark Published, Logs, Reconcile, and Publication History + CSV Export), updated `WebsiteSocialProfilesTab.vue`, and updated Dashboard KPIs (`phase4_metrics`).
+- **Profile Test Post and credential guides:** Social Profiles and Connected Accounts can create an unpublished test draft for the selected profile and open it in the existing editor. Profile-specific guides show official credential instructions and the callback URI. Verified the draft endpoint's CSRF, revision, and approval behavior in the backend suite (83 passed excluding live MySQL tests). Frontend typecheck, 22 Vitest tests, and production build passed.
+- **Prompt Logs:** Added the audit-style `/prompt-logs` page with Gemini and LocalAI model identity, task and status filters, estimated and provider-reported tokens, latency, cache indicators, and an on-demand view of the redacted prompt and result. Migration `20261128_0009` adds encrypted exchange storage. Older entries retain their metadata. Verified 84 backend tests excluding live MySQL tests, 22 frontend tests, typecheck and build, protected runtime routes, and a rolled-back encrypted write/read in local MySQL.
+
+### Phase 4 Validation Evidence (Latest Run)
+- **Backend Lint & Checks:** `.venv/bin/ruff check .` passed (`All checks passed!`), `alembic current` confirmed `20261128_0009 (head)`, `python -m app.cli check-db` verified live MySQL `8.0.45` (`utf8mb4`, `InnoDB`).
+- **Backend Automated Tests (`cd backend && .venv/bin/pytest -q`):** **88 passed** (`3` warnings, 0 failed). Publishing and connection tests use `httpx.MockTransport`; no live external social posts were created.
+- **Frontend Verification (`cd frontend`):** `npm run typecheck` passed (`0` errors), `npx vitest run` passed (**7 test files, 22 tests** — including `tests/phase4.test.ts`), and `npm run build` completed cleanly.
+- **LocalAI Host Configuration:** The verified endpoint is `http://127.0.0.1:8081/v1` using `qwen3.5-4b-claude-4.6-opus-reasoning-distilled` (lightweight 4B). The reasoning-channel compatibility fix accepts `message.reasoning`/`reasoning_content` JSON and normalizes `primary_focus_keyphrase`; unavailable LocalAI cleanly falls back to Python keyword output. All code defaults now use port `8081`.
+- **Database Preservation:** Development MySQL revision is `20261128_0009`; migration `20261128_0008` is applied in the live chain. Record counts preserved at verification: 1 website, 1037 website contents, 1036 content keywords, 1036 content approvals, 2 social profiles, and 0 created publishing jobs/logs/publication records.
+- **Isolated Runtime Smoke Test:** Booted FastAPI (`127.0.0.1:18100`) and built Nitro SSR server (`127.0.0.1:13100`); confirmed `/api/v1/health` HTTP `200`, protected `/api/v1/platforms` HTTP `401`, `/login` SSR HTTP `200`, and auth-redirect HTTP `302` on `/`, `/connected-accounts`, `/publishing-calendar`, and `/social-media`.

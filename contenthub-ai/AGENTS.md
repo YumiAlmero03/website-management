@@ -24,7 +24,7 @@ Do **not** change or add to this stack without explicit owner approval.
 - **State:** Pinia
 - **Future-Phase UI Libraries (install only in their respective phase):**
   - Tiptap free/open-source extensions (Phase 5 — Article Editor)
-  - FullCalendar Standard (Phase 4 — Publishing Calendar)
+  - FullCalendar Standard (Phase 4 — Installed `@fullcalendar/*@6.1.22` + `luxon`)
   - Chart.js (Phase 6+ — Analytics)
 
 ### Backend (`backend/`)
@@ -102,7 +102,7 @@ Never introduce any of the following unless explicitly requested in writing:
 ## 6. Coding & Honesty Standards
 
 - **Type Safety:** TypeScript everywhere in `frontend/`; Python type hints everywhere in `backend/`.
-- **Honesty Over Mocks:** Never fabricate live statistics, never leave fake endpoints returning `200 OK` for unimplemented integrations. Unimplemented Phase 4–6 modules must explicitly display "Not Yet Implemented" status or return honest `501 Not Implemented` / explicit status markers.
+- **Honesty Over Mocks:** Never fabricate live statistics, never leave fake endpoints returning `200 OK` for unimplemented integrations. Unimplemented Phase 5–6 modules must explicitly display "Not Yet Implemented" status or return honest `501 Not Implemented` / explicit status markers.
 - **No Silent Failures:** Handle errors explicitly, log structured context (redacted), and surface actionable errors to the administrator.
 - **Phase Discipline:** Implement only the active roadmap phase. Stop at phase boundaries for review.
 - **Progress Tracking:** Update `docs/PROGRESS.md` after every milestone with actual test results, blockers, and architectural decisions.

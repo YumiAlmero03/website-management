@@ -109,13 +109,23 @@ class Settings(BaseSettings):
     ai_job_stale_timeout_minutes: int = Field(default=15, ge=5, le=180)
     ai_job_max_attempts: int = Field(default=3, ge=1, le=10)
     localai_enabled: bool = False
-    localai_base_url: str = "http://127.0.0.1:8080/v1"
+    localai_base_url: str = "http://127.0.0.1:8081/v1"
     localai_api_key: str = ""
     localai_model: str = ""
     localai_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     localai_max_output_tokens: int = Field(default=512, ge=64, le=8192)
     localai_timeout_seconds: int = Field(default=60, ge=5, le=300)
     localai_max_concurrency: int = Field(default=1, ge=1, le=10)
+
+    # Phase 4 — Social Media Publishing, OAuth & Scheduling
+    publishing_stale_timeout_minutes: int = Field(default=10, ge=2, le=120)
+    publishing_max_attempts: int = Field(default=3, ge=1, le=10)
+    publishing_request_timeout_seconds: int = Field(default=30, ge=5, le=180)
+    publishing_max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
+    public_media_base_url: str = ""
+    oauth_allowed_redirect_hosts: str = ""
+    meta_graph_api_version: str = "v27.0"
+    linkedin_api_version: str = "202610"
 
     @field_validator("app_timezone")
     @classmethod
@@ -149,6 +159,15 @@ class Settings(BaseSettings):
             for host in self.scanner_trusted_internal_hosts.split(",")
             if host.strip()
         }
+
+    @property
+    def oauth_allowed_redirect_host_set(self) -> set[str]:
+        hosts: set[str] = set()
+        for raw in self.oauth_allowed_redirect_hosts.split(","):
+            h = raw.strip().lower()
+            if h:
+                hosts.add(h)
+        return hosts
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -22,6 +22,7 @@ from app.routers import (
     health,
     logs,
     media,
+    publishing,
     scans,
     social_posts,
     social_profiles,
@@ -108,6 +109,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(social_profiles.router, prefix=api_prefix)
     app.include_router(ai.router, prefix=api_prefix)
     app.include_router(social_posts.router, prefix=api_prefix)
+    app.include_router(publishing.router, prefix=api_prefix)
 
     return app
 

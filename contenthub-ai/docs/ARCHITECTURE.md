@@ -201,3 +201,76 @@ backend/app/
 │   └── seo/, editorial/, publishers/, scheduler/, analytics/ (Phases 4–6 stubs)
 └── routers/           # Lightweight FastAPI HTTP routers
 ```
+
+
+---
+
+## Phase 4 Architecture — Social Publishing & Account Connections
+
+Phase 4 extends ContentHub AI with modular official-API adapters, OAuth 2.0 / PKCE session management, Pillow media normalization, 11-point preflight validation, durable MySQL publishing jobs, FullCalendar Standard scheduling, and permanent publication history.
+
+### 1. End-to-End Approval, Preflight & Publishing Flow
+
+```mermaid
+flowchart TD
+    A["Discovered Content & Keywords"] --> B{"Content + Keyword Approved?"}
+    B -- "No" --> C["Blocked by Preflight"]
+    B -- "Yes" --> D["Social Draft Edited & Approved (pinned revision)"]
+    D --> E{"Material Edit or Media Change?"}
+    E -- "Yes" --> F["Invalidate Approval + Cancel Active Schedule"]
+    F --> D
+    E -- "No" --> G["11-Point Preflight Check"]
+    G --> H{"Publishing Method"}
+    H -- "Manual / X Paid Disabled" --> I["Copy Content + Download Media + Mark Published"]
+    I --> M["PublicationRecord Snapshot + History Log"]
+    H -- "Official API (confirm=true)" --> J["Durable PublishingJob (MySQL FOR UPDATE)"]
+    J --> K["Pillow Prepare Media + Scoped Public URL (24h)"]
+    K --> L["TrustedPublisherHttpClient (HTTPS Host Allowlist)"]
+    L -- "2xx Success" --> M
+    L -- "429 / 5xx / Critical Load" --> N["Deferred Exponential Backoff Retry"]
+    L -- "400 / 401 / 403 Permanent" --> O["Failed Job + Error Details (Manual Retry)"]
+    L -- "Timeout After POST Mutation" --> P["VerificationRequired (No Blind Retry)"]
+    P --> Q["Reconcile (Auto Feed Check / Confirm Published / Confirm Missing)"]
+    Q --> M
+```
+
+### 2. OAuth 2.0 + PKCE Connection & Token Refresh Sequence
+
+```mermaid
+sequenceDiagram
+    actor Admin
+    participant UI as Connected Accounts UI
+    participant API as FastAPI Publishing Router
+    participant DB as MySQL (InnoDB)
+    participant Ext as Official Platform OAuth/API
+
+    Admin->>UI: Click Connect OAuth
+    UI->>API: POST /social-profiles/{id}/connect (mode=oauth)
+    API->>API: Validate redirect_uri host + generate PKCE S256 & state
+    API->>DB: Store hashed state + Fernet-encrypted code_verifier (15m TTL)
+    API-->>UI: Return authorization_url
+    Admin->>Ext: Authorize app scopes
+    Ext-->>UI: Redirect back with code & state
+    UI->>API: POST /social-profiles/{id}/oauth/complete
+    API->>DB: Consume single-use pending state (reject replay/expired)
+    API->>Ext: Exchange code + verifier via TrustedPublisherHttpClient
+    Ext-->>API: Access token, refresh token & discovered Pages/Locations/Boards
+    API->>DB: Store Fernet-encrypted tokens + SocialProfileConnection
+    API-->>UI: Return connection status, scopes & target options
+```
+
+### 3. Publishing Job Lifecycle & Ambiguous Timeout Recovery
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: "Publish Now / Due Schedule"
+    queued --> processing: "Worker claims with SELECT FOR UPDATE"
+    processing --> deferred: "Resource Guardian critical OR Retryable 429/5xx"
+    deferred --> processing: "Re-claimed after next_retry_at"
+    processing --> published: "2xx External Post ID + Permalink"
+    processing --> failed: "Permanent 400/401/403 OR max_attempts exhausted"
+    failed --> queued: "Explicit Admin Retry"
+    processing --> verification_required: "Network Timeout after POST mutation OR Stale Heartbeat"
+    verification_required --> published: "Reconcile confirms post exists or Admin confirms URL"
+    verification_required --> queued: "Reconcile confirms missing (safe re-queue)"
+```

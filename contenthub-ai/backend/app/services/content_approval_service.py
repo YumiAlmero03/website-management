@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import contextlib
+import json
 import math
+import time
 from typing import TYPE_CHECKING, Any
 
 from rapidfuzz import fuzz
@@ -46,15 +47,12 @@ from app.schemas.keyword_approval import (
     RejectContentRequest,
     ReopenReviewRequest,
 )
-from app.services.ai.context_builder import format_knowledge_summary, prepare_article_context
-from app.services.ai.exceptions import AiProviderNotConfiguredError
+from app.services.ai.exceptions import AiError, AiProviderNotConfiguredError
+from app.services.ai.localai import LocalAiKeywordResponseError, LocalAiProvider
+from app.services.ai.prompt_log import encrypt_prompt_exchange, redact_ai_log_text
 from app.services.ai.provider import AiProviderClientProtocol
-from app.services.ai.quota_manager import QuotaManager
-from app.services.ai.localai import LocalAiProvider
-from app.services.ai.response_validator import parse_structured_response
-from app.services.ai.token_tracker import estimate_tokens_from_text
+from app.services.ai.token_tracker import estimate_tokens_from_text, resolve_usage_fields
 from app.services.content.keyword_suggester import (
-    GeminiKeywordSuggestionOutput,
     build_synced_anchor_texts,
     detect_cannibalization_warnings,
     suggest_keywords_for_content,
@@ -227,13 +225,7 @@ class KeywordReuseService:
     def _load_website_keyword_pairs(
         self, website_id: int
     ) -> list[tuple[ContentKeyword, WebsiteContent]]:
-        kws = self.repo.list_keywords_for_website(website_id)
-        pairs: list[tuple[ContentKeyword, WebsiteContent]] = []
-        for kw in kws:
-            c = self.content_repo.get_by_id(kw.website_content_id)
-            if c is not None:
-                pairs.append((kw, c))
-        return pairs
+        return self.repo.list_website_keyword_pairs(website_id)
 
 
 class ContentApprovalService:
@@ -1383,7 +1375,6 @@ class ContentApprovalService:
             suggestion_source = "template_generated"
         else:
             candidates = [python_result.focus_keyphrase, *python_result.secondary_keywords]
-            import json
             compact_context = json.dumps(
                 {
                     "website_name": site.name,
@@ -1408,14 +1399,21 @@ class ContentApprovalService:
             sys_inst = (
                 "Select one primary focus keyphrase and relevant secondary keywords "
                 "using only supplied evidence and candidates. Preserve the page language. "
-                "Do not invent facts or rankings. Avoid duplicates. Return JSON only."
+                "Do not invent facts or rankings. Avoid duplicates. "
+                'Return JSON only matching {"focus_keyphrase": "...", '
+                '"secondary_keywords": ["..."]}.'
             )
             focus = python_result.focus_keyphrase
             secondary = python_result.secondary_keywords
             suggestion_source = "python_only"
+            exchange = None
+            error_code = None
+            error_message = None
+            log_status = "succeeded"
+            started = time.monotonic()
             try:
-                parsed, _ = LocalAiProvider().select_keywords(
-                    base_url=provider.base_url or "http://127.0.0.1:8080/v1",
+                parsed, exchange = LocalAiProvider().select_keywords(
+                    base_url=provider.base_url or "http://127.0.0.1:8081/v1",
                     api_key=api_key,
                     model_name=provider.selected_model,
                     system_instruction=sys_inst,
@@ -1448,8 +1446,45 @@ class ContentApprovalService:
                     limit=12,
                 )
                 suggestion_source = "localai_assisted"
-            except Exception:
-                suggestion_source = "python_only"
+            except Exception as exc:
+                if isinstance(exc, LocalAiKeywordResponseError):
+                    exchange = exc.result
+                error_code = exc.code if isinstance(exc, AiError) else "LOCALAI_KEYWORD_FAILED"
+                error_message = (
+                    str(exc) if isinstance(exc, AiError) else "Keyword refinement failed."
+                )
+                log_status = (
+                    "invalid_response" if error_code == "LOCALAI_INVALID_RESPONSE" else "failed"
+                )
+
+            self.ai_repo.create_log({
+                "ai_provider_id": provider.id,
+                "website_id": site.id,
+                "website_content_id": content.id,
+                "task_type": "keyword_refinement",
+                "model_name": exchange.model_name if exchange else provider.selected_model,
+                "context_mode": "optimized",
+                "cache_hit": False,
+                "status": log_status,
+                "latency_ms": (
+                    exchange.latency_ms if exchange else int((time.monotonic() - started) * 1000)
+                ),
+                "error_code": error_code,
+                "error_message": (
+                    redact_ai_log_text(error_message, api_key)[:500] if error_message else None
+                ),
+                **resolve_usage_fields(
+                    estimated_input_tokens=estimate_tokens_from_text(sys_inst + compact_context),
+                    provider_result=exchange,
+                ),
+                "encrypted_prompt_exchange": encrypt_prompt_exchange(
+                    self.settings.app_encryption_key,
+                    system_instruction=sys_inst,
+                    user_prompt=compact_context,
+                    response=(exchange.raw_text or None) if exchange else None,
+                    api_key=api_key,
+                ),
+            })
 
         existing_kw = self.repo.get_keyword_by_content_id(content.id)
         existing_alts = list(existing_kw.image_alt_suggestions_json or []) if existing_kw else []

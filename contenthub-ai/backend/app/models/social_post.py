@@ -25,6 +25,8 @@ class SocialPost(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_social_posts_dedupe_key"),
         Index("ix_social_posts_status", "status", "created_at"),
+        Index("ix_social_posts_publishing_status", "publishing_status", "scheduled_for"),
+        Index("ix_social_posts_published_at", "published_at"),
         Index("ix_social_posts_website_profile", "website_id", "social_profile_id"),
         Index("ix_social_posts_content", "website_content_id"),
         Index("ix_social_posts_platform", "platform_id"),
@@ -116,6 +118,23 @@ class SocialPost(TimestampMixin, Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    publishing_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unscheduled", server_default="unscheduled"
+    )
+    approved_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    alternative_captions_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    utm_params_json: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
+    target_url_with_utm: Mapped[str | None] = mapped_column(String(1200), nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    display_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    external_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    published_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    verification_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unverified", server_default="unverified"
+    )
+    last_publish_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_publish_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
 
 class SocialPostRevision(Base):

@@ -79,6 +79,15 @@ def get_website(
     return website_service.get_website(website_id)
 
 
+@router.get("/{website_id}/keyword-bank", response_model=list[str])
+def get_website_keyword_bank(
+    website_id: int,
+    _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
+    website_service: Annotated[WebsiteService, Depends(get_website_service)],
+) -> list[str]:
+    return website_service.get_keyword_bank(website_id)
+
+
 @router.patch("/{website_id}", response_model=WebsiteResponse)
 def update_website(
     website_id: int,

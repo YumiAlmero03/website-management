@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.base import utc_now_naive
@@ -17,7 +18,12 @@ class SocialPostRepositoryProtocol(Protocol):
         social_profile_id: int | None = None,
         platform_id: int | None = None,
         status: str | None = None,
+        publishing_status: str | None = None,
+        view: str | None = None,
         website_content_id: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        search: str | None = None,
         page: int = 1,
         page_size: int = 25,
     ) -> tuple[list[SocialPost], int]: ...
@@ -62,6 +68,8 @@ class SocialPostRepositoryProtocol(Protocol):
 
     def list_revisions(self, post_id: int) -> list[SocialPostRevision]: ...
 
+    def get_revision_by_id(self, revision_id: int) -> SocialPostRevision | None: ...
+
 
 class SQLAlchemySocialPostRepository:
     def __init__(self, db: Session) -> None:
@@ -74,27 +82,96 @@ class SQLAlchemySocialPostRepository:
         social_profile_id: int | None = None,
         platform_id: int | None = None,
         status: str | None = None,
+        publishing_status: str | None = None,
+        view: str | None = None,
         website_content_id: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        search: str | None = None,
         page: int = 1,
         page_size: int = 25,
     ) -> tuple[list[SocialPost], int]:
         stmt = select(SocialPost)
         count_stmt = select(func.count(SocialPost.id))
+        filters: list[Any] = []
         if website_id is not None:
-            stmt = stmt.where(SocialPost.website_id == website_id)
-            count_stmt = count_stmt.where(SocialPost.website_id == website_id)
+            filters.append(SocialPost.website_id == website_id)
         if social_profile_id is not None:
-            stmt = stmt.where(SocialPost.social_profile_id == social_profile_id)
-            count_stmt = count_stmt.where(SocialPost.social_profile_id == social_profile_id)
+            filters.append(SocialPost.social_profile_id == social_profile_id)
         if platform_id is not None:
-            stmt = stmt.where(SocialPost.platform_id == platform_id)
-            count_stmt = count_stmt.where(SocialPost.platform_id == platform_id)
+            filters.append(SocialPost.platform_id == platform_id)
         if website_content_id is not None:
-            stmt = stmt.where(SocialPost.website_content_id == website_content_id)
-            count_stmt = count_stmt.where(SocialPost.website_content_id == website_content_id)
+            filters.append(SocialPost.website_content_id == website_content_id)
         if status and status != "all":
-            stmt = stmt.where(SocialPost.status == status)
-            count_stmt = count_stmt.where(SocialPost.status == status)
+            filters.append(SocialPost.status == status)
+        if publishing_status and publishing_status != "all":
+            filters.append(SocialPost.publishing_status == publishing_status)
+        if view and view != "all":
+            if view == "drafts":
+                filters.append(SocialPost.status != "archived")
+            elif view == "pending_review":
+                filters.append(SocialPost.status == "pending_review")
+            elif view == "approved":
+                filters.append(
+                    (SocialPost.status == "approved")
+                    & SocialPost.publishing_status.in_(("unscheduled", "approved", "cancelled"))
+                )
+            elif view == "scheduled":
+                filters.append(
+                    SocialPost.publishing_status.in_(("scheduled", "queued", "deferred"))
+                )
+            elif view == "publishing":
+                filters.append(
+                    SocialPost.publishing_status.in_(("publishing", "verification_required"))
+                )
+            elif view == "published":
+                filters.append(
+                    SocialPost.publishing_status.in_(("published", "manually_published"))
+                )
+            elif view == "failed":
+                filters.append(
+                    or_(
+                        SocialPost.publishing_status == "failed",
+                        SocialPost.status == "generation_failed",
+                    )
+                )
+            elif view == "manual_publishing":
+                filters.append(
+                    (SocialPost.status == "approved")
+                    & SocialPost.publishing_status.in_(
+                        ("unscheduled", "approved", "manually_published", "cancelled")
+                    )
+                )
+            elif view == "archived":
+                filters.append(SocialPost.status == "archived")
+        if date_from is not None:
+            dt_from = date_from.replace(tzinfo=None)
+            filters.append(
+                func.coalesce(
+                    SocialPost.published_at, SocialPost.scheduled_for, SocialPost.created_at
+                )
+                >= dt_from
+            )
+        if date_to is not None:
+            dt_to = date_to.replace(tzinfo=None)
+            filters.append(
+                func.coalesce(
+                    SocialPost.published_at, SocialPost.scheduled_for, SocialPost.created_at
+                )
+                <= dt_to
+            )
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            filters.append(
+                or_(
+                    SocialPost.caption.ilike(term),
+                    SocialPost.title.ilike(term),
+                    SocialPost.source_url.ilike(term),
+                )
+            )
+        for f in filters:
+            stmt = stmt.where(f)
+            count_stmt = count_stmt.where(f)
 
         total = int(self.db.execute(count_stmt).scalar() or 0)
         offset = (page - 1) * page_size
@@ -113,20 +190,45 @@ class SQLAlchemySocialPostRepository:
         platform_id: int | None = None,
     ) -> dict[str, int]:
         stmt = select(SocialPost.status, func.count(SocialPost.id)).group_by(SocialPost.status)
+        pub_stmt = select(SocialPost.publishing_status, func.count(SocialPost.id)).group_by(
+            SocialPost.publishing_status
+        )
         if website_id is not None:
             stmt = stmt.where(SocialPost.website_id == website_id)
+            pub_stmt = pub_stmt.where(SocialPost.website_id == website_id)
         if social_profile_id is not None:
             stmt = stmt.where(SocialPost.social_profile_id == social_profile_id)
+            pub_stmt = pub_stmt.where(SocialPost.social_profile_id == social_profile_id)
         if platform_id is not None:
             stmt = stmt.where(SocialPost.platform_id == platform_id)
+            pub_stmt = pub_stmt.where(SocialPost.platform_id == platform_id)
+
         counts = {row[0]: int(row[1]) for row in self.db.execute(stmt).fetchall()}
+        pub_counts = {row[0]: int(row[1]) for row in self.db.execute(pub_stmt).fetchall()}
+        total = sum(counts.values())
+        archived = counts.get("archived", 0)
         return {
-            "total_drafts": sum(counts.values()),
+            "total_drafts": total,
+            "drafts": total - archived,
             "pending_review": counts.get("pending_review", 0),
             "approved": counts.get("approved", 0),
             "rejected": counts.get("rejected", 0),
             "generation_failed": counts.get("generation_failed", 0),
-            "archived": counts.get("archived", 0),
+            "archived": archived,
+            "scheduled": (
+                pub_counts.get("scheduled", 0)
+                + pub_counts.get("queued", 0)
+                + pub_counts.get("deferred", 0)
+            ),
+            "publishing": (
+                pub_counts.get("publishing", 0) + pub_counts.get("verification_required", 0)
+            ),
+            "published": (
+                pub_counts.get("published", 0) + pub_counts.get("manually_published", 0)
+            ),
+            "manually_published": pub_counts.get("manually_published", 0),
+            "failed_publishing": pub_counts.get("failed", 0),
+            "verification_required": pub_counts.get("verification_required", 0),
         }
 
     def get_by_id(self, post_id: int) -> SocialPost | None:
@@ -237,3 +339,6 @@ class SQLAlchemySocialPostRepository:
             .order_by(SocialPostRevision.version_number.desc())
         )
         return list(self.db.execute(stmt).scalars().all())
+
+    def get_revision_by_id(self, revision_id: int) -> SocialPostRevision | None:
+        return self.db.get(SocialPostRevision, revision_id)

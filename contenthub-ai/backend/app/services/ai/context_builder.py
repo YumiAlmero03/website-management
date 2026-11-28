@@ -222,8 +222,9 @@ def select_knowledge_sources(
     if website.target_keywords:
         admin_lines.append(f"Admin Target Keywords: {', '.join(website.target_keywords)}")
     if website.keyword_bank:
+        bank_csv = ", ".join(website.keyword_bank)
         admin_lines.append(
-            f"Website Keyword Bank (reference for new blogs/articles): {', '.join(website.keyword_bank)}"
+            f"Website Keyword Bank (reference for new blogs/articles): {bank_csv}"
         )
     if website.restricted_keywords:
         admin_lines.append(f"Admin Restricted Keywords: {', '.join(website.restricted_keywords)}")

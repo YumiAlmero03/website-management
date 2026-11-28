@@ -14,7 +14,7 @@ def estimate_tokens_from_text(text: str | None) -> int:
 
 def resolve_usage_fields(
     *,
-    estimated_input_tokens: int,
+    estimated_input_tokens: int | None,
     provider_result: ProviderGenerationResult | None = None,
     cache_hit: bool = False,
 ) -> dict[str, int | str | None]:

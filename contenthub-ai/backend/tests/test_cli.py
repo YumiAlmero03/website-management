@@ -192,3 +192,43 @@ def test_safe_http_fetcher_connection_pooling_and_close(test_settings: Settings)
     fetcher.close()
     assert len(fetcher._clients) == 0
     assert client3.is_closed
+
+
+def test_cli_publishing_commands_and_parser(
+    monkeypatch: Any,
+    test_settings: Settings,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from app import cli
+
+    parser = cli.build_parser()
+    args_single = parser.parse_args(["run-publish-job", "--job-id", "77"])
+    assert args_single.command == "run-publish-job"
+    assert args_single.job_id == 77
+
+    args_due = parser.parse_args(["run-due-publishes", "--limit", "5"])
+    assert args_due.command == "run-due-publishes"
+    assert args_due.limit == 5
+
+    fake_service = MagicMock()
+    fake_service.execute_job.return_value = MagicMock(status="published")
+    fake_service.run_due_jobs.return_value = [
+        MagicMock(status="published"),
+        MagicMock(status="deferred"),
+    ]
+
+    assert cli.run_single_publish_job(job_id=77, service=fake_service) == 0
+    assert cli.run_due_publishes(limit=5, service=fake_service) == 0
+
+    fake_service.execute_job.return_value = MagicMock(status="failed")
+    assert cli.run_single_publish_job(job_id=77, service=fake_service) == 1
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    monkeypatch.setattr(cli, "_build_publishing_service", MagicMock())
+    monkeypatch.setattr(cli, "get_session_factory", MagicMock(side_effect=lambda: MagicMock()))
+    bad_db = MagicMock()
+    bad_db.execute.side_effect = SQLAlchemyError("db error")
+    monkeypatch.setattr(cli, "get_session_factory", lambda: (lambda: bad_db))
+    assert cli.run_due_publishes(limit=5) == 1
