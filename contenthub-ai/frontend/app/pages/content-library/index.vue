@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { Ban, CheckCircle2, ExternalLink, RefreshCw, RotateCcw } from 'lucide-vue-next'
-import type { ContentListItem, ContentListResponse, ContentStats } from '~/types/api'
+import type {
+  ContentListItem,
+  ContentListResponse,
+  ContentStats,
+  IndexingStatus,
+} from '~/types/api'
 import {
   CONTENT_TYPE_OPTIONS,
   extractErrorMessage,
@@ -49,6 +54,18 @@ const totalItems = ref(0)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 const busyItemId = ref<number | null>(null)
+const googleIndexFilter = ref('all')
+const indexingStatus = ref<IndexingStatus>({
+  state: 'idle',
+  progress: 0,
+  total: 0,
+  processed: 0,
+  indexed: 0,
+  skipped: 0,
+  ready: 0,
+  failed: 0,
+})
+let indexingPoll: ReturnType<typeof setInterval> | null = null
 
 const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / pageSize.value)))
 
@@ -85,6 +102,9 @@ async function loadContents() {
     }
     if (search.value.trim()) {
       query.search = search.value.trim()
+    }
+    if (googleIndexFilter.value !== 'all') {
+      query.google_index_status = googleIndexFilter.value
     }
 
     const res = await request<ContentListResponse>('/api/v1/contents', { query })
@@ -179,14 +199,84 @@ async function retryExtraction(item: ContentListItem) {
   }
 }
 
+const resolvedIndexingWebsiteId = computed<number | null>(() => {
+  if (websiteFilter.value !== 'all') {
+    const parsed = Number(websiteFilter.value)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  }
+  if (uiStore.selectedWebsiteId !== null) {
+    return uiStore.selectedWebsiteId
+  }
+  if (uiStore.websitesCatalog.length === 1) {
+    return uiStore.websitesCatalog[0]?.id ?? null
+  }
+  return null
+})
+
+function ensureIndexingPoll() {
+  if (indexingPoll) {
+    return
+  }
+  indexingPoll = setInterval(() => {
+    void refreshIndexingStatus()
+  }, 3000)
+}
+
+async function refreshIndexingStatus() {
+  const targetWebsiteId = resolvedIndexingWebsiteId.value
+  if (targetWebsiteId === null) {
+    return
+  }
+  try {
+    indexingStatus.value = await request<IndexingStatus>(
+      `/api/v1/indexing/websites/${targetWebsiteId}/status`,
+    )
+    if (indexingStatus.value.state === 'queued' || indexingStatus.value.state === 'processing') {
+      ensureIndexingPoll()
+    }
+  }
+  catch {
+    // Leave the last known button state visible while the status endpoint is unavailable.
+  }
+}
+
+watch(() => indexingStatus.value.state, (state) => {
+  if (state === 'completed') {
+    if (indexingPoll) {
+      clearInterval(indexingPoll)
+      indexingPoll = null
+    }
+    toast.add({
+      title: 'Indexing completed',
+      description: `${indexingStatus.value.processed} processed · ${indexingStatus.value.indexed} indexed · ${indexingStatus.value.skipped} skipped · ${indexingStatus.value.ready} ready to request · ${indexingStatus.value.failed} failed`,
+      color: 'success',
+    })
+    void loadContents()
+  }
+  if (state === 'deferred') {
+    if (indexingPoll) {
+      clearInterval(indexingPoll)
+      indexingPoll = null
+    }
+  }
+})
+
 watch(
   () => uiStore.selectedWebsiteId,
   (val) => {
     websiteFilter.value = val !== null ? String(val) : 'all'
+    void refreshIndexingStatus()
   },
 )
 
-watch([activeTab, websiteFilter, categoryFilter, changeFilter, sortBy], () => {
+watch(
+  () => [websiteFilter.value, uiStore.websitesCatalog.length],
+  () => {
+    void refreshIndexingStatus()
+  },
+)
+
+watch([activeTab, websiteFilter, categoryFilter, changeFilter, sortBy, googleIndexFilter], () => {
   page.value = 1
   void loadContents()
 })
@@ -204,7 +294,11 @@ function openGenerateModal(item: ContentListItem) {
 }
 
 onMounted(() => {
-  void Promise.all([uiStore.refreshGlobalSelectors(), loadContents()])
+  void Promise.all([uiStore.refreshGlobalSelectors(), loadContents(), refreshIndexingStatus()])
+})
+
+onUnmounted(() => {
+  if (indexingPoll) clearInterval(indexingPoll)
 })
 </script>
 
@@ -217,7 +311,7 @@ onMounted(() => {
           Universal Content Library
         </h1>
         <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-          Every discovered homepage, page, blog index, blog post, category archive, revision, and extraction failure stored in MySQL.
+          Every discovered homepage, page, blog index, blog post, category archive, revision, and extraction failure stored in MySQL. Start Google indexing from the website's Settings.
         </p>
       </div>
       <UButton
@@ -320,6 +414,20 @@ onMounted(() => {
       </select>
 
       <select
+        v-model="googleIndexFilter"
+        aria-label="Filter by Google Index status"
+        class="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+      >
+        <option value="all">Google Index: All</option>
+        <option value="not_indexed">Not Indexed</option>
+        <option value="indexed">Indexed</option>
+        <option value="ready_to_request">Ready to Request</option>
+        <option value="uninspected">Uninspected</option>
+        <option value="failed">Failed</option>
+        <option value="technical_issue">Technical Issue</option>
+      </select>
+
+      <select
         v-model="sortBy"
         aria-label="Sort results"
         class="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
@@ -373,6 +481,7 @@ onMounted(() => {
             <th class="px-4 py-3 font-medium">Website</th>
             <th class="px-4 py-3 font-medium">Classification</th>
             <th class="px-4 py-3 font-medium">Extraction</th>
+            <th class="px-4 py-3 font-medium">Google Index</th>
             <th class="px-4 py-3 font-medium">Sources & Words</th>
             <th class="px-4 py-3 font-medium">Discovered</th>
             <th class="px-4 py-3 text-right font-medium">Actions</th>
@@ -467,6 +576,29 @@ onMounted(() => {
               >
                 HTTP {{ item.http_status }}
               </span>
+            </td>
+
+            <td class="px-4 py-3 whitespace-nowrap">
+              <UBadge
+                :color="item.google_index_status === 'indexed'
+                  ? 'success'
+                  : item.google_index_status === 'ready_to_request'
+                    ? 'warning'
+                    : item.google_index_status === 'failed' || item.google_index_status === 'technical_issue'
+                      ? 'error'
+                      : 'neutral'"
+                variant="subtle"
+                size="xs"
+              >
+                {{ item.google_index_status.replaceAll('_', ' ') }}
+              </UBadge>
+              <p
+                v-if="item.google_index_coverage_state"
+                class="mt-1 max-w-40 truncate text-[10px] text-slate-500"
+                :title="item.google_index_coverage_state"
+              >
+                {{ item.google_index_coverage_state }}
+              </p>
             </td>
 
             <td class="px-4 py-3">

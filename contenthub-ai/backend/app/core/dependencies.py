@@ -65,6 +65,7 @@ from app.services.category_service import WebsiteCategoryService
 from app.services.content_approval_service import ContentApprovalService
 from app.services.content_service import ContentService
 from app.services.dashboard_service import DashboardService
+from app.services.indexing_service import IndexingService
 from app.services.media_service import MediaService
 from app.services.monitoring.health_service import HealthService
 from app.services.publishers.registry import PublisherAdapterRegistry
@@ -81,6 +82,7 @@ from app.services.scan_executor import (
 )
 from app.services.scanner.security import SafeHttpFetcher
 from app.services.settings_service import SettingsService
+from app.services.social_image_generation_service import SocialImageGenerationService
 from app.services.social_post_service import SocialPostService
 from app.services.social_profile_service import SocialProfileService
 from app.services.website_service import WebsiteService
@@ -166,6 +168,19 @@ def get_scan_log_repo(
 
 def get_media_repo(db: Annotated[Session, Depends(get_db_session)]) -> MediaRepositoryProtocol:
     return SQLAlchemyMediaRepository(db)
+
+
+def get_social_image_generation_service(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    ai_repo: Annotated[AiRepositoryProtocol, Depends(get_ai_repo)],
+    media_repo: Annotated[MediaRepositoryProtocol, Depends(get_media_repo)],
+) -> SocialImageGenerationService:
+    return SocialImageGenerationService(
+        settings=settings,
+        ai_repo=ai_repo,
+        media_repo=media_repo,
+        provider_client=GeminiSdkProvider(),
+    )
 
 
 def get_ai_repo(db: Annotated[Session, Depends(get_db_session)]) -> AiRepositoryProtocol:
@@ -630,6 +645,17 @@ def get_content_service(
         fetcher=fetcher,
         keyword_approval_repo=keyword_approval_repo,
         approval_service=approval_service,
+    )
+
+
+def get_indexing_service(
+    db: Annotated[Session, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> IndexingService:
+    return IndexingService(
+        db=db,
+        settings=settings,
+        health_service=HealthService(settings=settings),
     )
 
 

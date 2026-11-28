@@ -14,6 +14,7 @@ The implementation matches the approved Phase 4 roadmap:
 - Modular publisher adapter registry with official Facebook, Instagram, Google Business, Threads, LinkedIn, Pinterest, and X/Twitter integrations, plus manual fallback.
 - Human approval default with schedule, cancel, reconcile, manual published, logs, and publication-history workflows.
 - FullCalendar month/week/day publishing calendar with UTC storage and Asia/Manila display.
+- Social Media editor image generation through the configured default Gemini provider's Imagen model; generated files are validated, saved as website-scoped media assets, and selected as the draft's primary attachment.
 - Publishing history, status verification, CSV export, and permanent publication snapshots.
 - `FOR UPDATE` transactional publishing job claiming, retry/backoff, stale recovery, idempotency, and ambiguous timeout reconciliation.
 - Resource Guardian integration and a single concurrent publishing worker limit.
@@ -63,7 +64,7 @@ The historical offline Alembic SQL-generation caveat for migration `20261127_000
 ## Test and Safety Evidence
 
 - Backend lint: `ruff check .` passed.
-- Backend tests: `88 passed`, `3` warnings.
+- Backend tests: `94 passed`, `3` warnings.
 - Publishing/connection tests: platform exchanges use `httpx.MockTransport`.
 - Frontend: `npm run typecheck` passed.
 - Frontend: 22 Vitest tests passed across 7 test files.
@@ -71,3 +72,23 @@ The historical offline Alembic SQL-generation caveat for migration `20261127_000
 - Live external publishing: not executed. No real content was published and no social credentials were used.
 - Resource Guardian: publishing defers on critical host pressure and retains the lightweight one-concurrent-job limit.
 - Test-post regression: verified that an unpublished test draft selects a recent website content item, stores its canonical URL, attaches a website media asset when available, and includes the source link in assembled Facebook/Twitter text.
+
+## Phase 4.1 One-Click Indexing Acceptance
+
+- Migration `20261128_0010` was applied successfully to the development MySQL database; Alembic now reports `20261128_0010 (head)`.
+- Website Settings is the sole location for Run Indexing, with per-website progress, deferred/completed states, and a compact completion notification. The Content Library retains the Google Index status filter and table column.
+- The worker selects at most 10 distinct eligible URLs, excludes confirmed indexed URLs, and prevents overlapping jobs for a website.
+- Published permalink capture and background backlink checks are retained.
+- Google URL Inspection is performed only for URLs inside the website's configured Search Console property.
+- Indexed status is assigned only from an indexed coverage state plus a PASS inspection verdict. Request-ready/ready-to-request status never reports confirmed indexing.
+- The restricted Google Indexing API is not used for ordinary pages.
+- Website Settings now includes a “Google Index Checker — Articles & Posts” section for the authorized Search Console property and per-website service-account JSON upload/removal.
+- Migration `20261128_0011` stores the service-account JSON in an encrypted website column. Upload validates the JSON, RSA private key, and fixed Google OAuth token endpoint; responses and audit logs never include credential contents. The existing server-level credential remains a fallback.
+- Indexing requires both an authorized Search Console property and an available service account. Grant the uploaded service account access to the matching Search Console property.
+- Indexing startup was repaired after reproducing two worker blockers: the eligibility query emitted MySQL-incompatible `NULLS LAST/FIRST`, and the worker called a nonexistent Resource Guardian method. Ordering now uses MySQL's native NULL ordering, and the worker calls `get_system_resources()`.
+- Worker launch failures now mark the persistent job failed and restore content statuses; detached worker output is written to `indexing-worker.log`.
+- The repaired eligibility query succeeds against the development MySQL database. The selected website has no Search Console property configured, so startup now returns a clear configuration error rather than queueing a job that cannot perform authorized inspection. No job was started and no Google API request was made.
+- Backend lint passed and the full backend suite passed: 102 tests, 3 dependency deprecation/optional-dependency warnings. Credential upload, encryption-at-rest, validation, removal, and mocked token generation are covered without live Google calls.
+- Social Media edit-post previews support both local media files and URL-only source images.
+- Generate Image uses mocked Imagen responses in tests; image validation, local media persistence, website scope, provider configuration, and CSRF are verified. No live image-generation request or social publication was made.
+- Activity & Audit Logs includes live background-worker status for website scanning, AI generation, social publishing, and Google indexing.

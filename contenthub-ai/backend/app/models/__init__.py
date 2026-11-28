@@ -7,6 +7,7 @@ from app.models.base import Base
 from app.models.content_approval import ContentApproval, ContentApprovalHistory
 from app.models.content_keyword import ContentKeyword, ContentKeywordRevision
 from app.models.content_revision import ContentRevision
+from app.models.indexing import IndexingHistory, IndexingJob
 from app.models.media_asset import MediaAsset
 from app.models.platform import Platform
 from app.models.prompt_template import PromptTemplate, PromptTemplateRevision
@@ -51,6 +52,8 @@ __all__ = [
     "ContentKeywordRevision",
     "ContentRevision",
     "MediaAsset",
+    "IndexingHistory",
+    "IndexingJob",
     "OAuthStateSession",
     "Platform",
     "PromptTemplate",

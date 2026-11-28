@@ -100,6 +100,7 @@ const historyMethodFilter = ref<string>('all')
 const editModalOpen = ref(false)
 const editTarget = ref<SocialPostItem | null>(null)
 const savingEdit = ref(false)
+const generatingImage = ref(false)
 const websiteAssets = ref<MediaAsset[]>([])
 const selectedMediaIds = ref<number[]>([])
 const postAttachments = ref<SocialPostMediaAttachment[]>([])
@@ -348,6 +349,13 @@ async function exportHistoryCsv() {
   }
 }
 
+function mediaAssetPreviewUrl(asset: MediaAsset) {
+  if (asset.file_path) {
+    return `/api/v1/media/${asset.id}/file`
+  }
+  return asset.source_url || ''
+}
+
 async function openEditModal(post: SocialPostItem) {
   editTarget.value = post
   const utm = post.utm_params || {}
@@ -392,6 +400,42 @@ function toggleMediaAsset(assetId: number) {
   }
   else {
     selectedMediaIds.value = [...selectedMediaIds.value, assetId]
+  }
+}
+
+async function generateSocialImage() {
+  if (!editTarget.value || !editForm.value.caption.trim()) {
+    return
+  }
+  generatingImage.value = true
+  try {
+    const prompt = [editForm.value.title.trim(), editForm.value.caption.trim()]
+      .filter(Boolean)
+      .join('\n')
+    const asset = await request<MediaAsset>(
+      `/api/v1/social-posts/${editTarget.value.id}/generate-image`,
+      { method: 'POST', body: { prompt } },
+    )
+    websiteAssets.value = [asset, ...websiteAssets.value.filter(item => item.id !== asset.id)]
+    selectedMediaIds.value = [
+      asset.id,
+      ...selectedMediaIds.value.filter(id => id !== asset.id),
+    ]
+    toast.add({
+      title: 'Image generated',
+      description: 'Selected as the primary image. Save changes to attach it to this draft.',
+      color: 'success',
+    })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Image generation failed',
+      description: extractErrorMessage(err, 'Could not generate an image. Verify Gemini Imagen configuration.'),
+      color: 'error',
+    })
+  }
+  finally {
+    generatingImage.value = false
   }
 }
 
@@ -1435,14 +1479,32 @@ onMounted(async () => {
           </div>
 
           <!-- Media Picker -->
-          <div v-if="websiteAssets.length > 0" class="space-y-2 rounded border border-slate-200 p-2.5 dark:border-slate-700">
+          <div class="space-y-2 rounded border border-slate-200 p-2.5 dark:border-slate-700">
             <div class="flex items-center justify-between">
               <span class="inline-flex items-center gap-1 font-semibold">
                 <ImagePlus class="h-3.5 w-3.5 text-teal-600" />
                 Attach Media Assets ({{ selectedMediaIds.length }} selected)
               </span>
+              <UButton
+                type="button"
+                color="primary"
+                variant="outline"
+                size="xs"
+                :loading="generatingImage"
+                :disabled="generatingImage || !editForm.caption.trim()"
+                @click="generateSocialImage"
+              >
+                <ImagePlus class="mr-1 h-3.5 w-3.5" />
+                Generate Image
+              </UButton>
             </div>
-            <div class="grid max-h-36 grid-cols-3 gap-2 overflow-y-auto sm:grid-cols-4">
+            <p class="text-[10px] text-slate-500 dark:text-slate-400">
+              Uses Gemini Imagen; provider usage may incur charges.
+            </p>
+            <p v-if="websiteAssets.length === 0" class="text-[11px] text-slate-500 dark:text-slate-400">
+              No media assets are available for this website.
+            </p>
+            <div v-else class="grid max-h-36 grid-cols-3 gap-2 overflow-y-auto sm:grid-cols-4">
               <button
                 v-for="asset in websiteAssets"
                 :key="asset.id"
@@ -1455,7 +1517,15 @@ onMounted(async () => {
                 ]"
                 @click="toggleMediaAsset(asset.id)"
               >
-                <img :src="`/api/v1/media/${asset.id}/file`" :alt="asset.file_name" class="h-12 w-full rounded object-cover">
+                <img
+                  v-if="mediaAssetPreviewUrl(asset)"
+                  :src="mediaAssetPreviewUrl(asset)"
+                  :alt="asset.alt_text || asset.file_name"
+                  class="h-12 w-full rounded object-cover"
+                >
+                <div v-else class="flex h-12 w-full items-center justify-center rounded bg-slate-100 text-[10px] text-slate-400">
+                  No preview
+                </div>
                 <span class="mt-1 w-full truncate text-[10px]">{{ asset.file_name }}</span>
               </button>
             </div>
@@ -1468,7 +1538,13 @@ onMounted(async () => {
 
           <div class="flex justify-end gap-2 pt-2">
             <UButton type="button" color="neutral" variant="outline" size="xs" @click="editModalOpen = false">Cancel</UButton>
-            <UButton type="submit" color="primary" size="xs" :loading="savingEdit">
+            <UButton
+              type="submit"
+              color="primary"
+              size="xs"
+              :loading="savingEdit"
+              :disabled="generatingImage"
+            >
               <Save class="mr-1 h-3.5 w-3.5" />
               Save Changes
             </UButton>

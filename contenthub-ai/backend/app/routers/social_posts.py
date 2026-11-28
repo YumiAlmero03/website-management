@@ -8,11 +8,13 @@ from fastapi import APIRouter, Body, Depends, Query, Request, status
 from app.core.dependencies import (
     extract_client_ip,
     get_ai_generation_service,
+    get_social_image_generation_service,
     get_social_post_service,
     require_admin,
     require_csrf,
 )
 from app.schemas.ai import AiGenerationJobResponse
+from app.schemas.media import MediaAssetResponse, SocialImageGenerationRequest
 from app.schemas.social_post import (
     SocialPostListResponse,
     SocialPostRegenerateRequest,
@@ -23,6 +25,8 @@ from app.schemas.social_post import (
 )
 from app.services.ai.generation_service import AiGenerationService
 from app.services.auth_service import AuthenticatedSession
+from app.services.media_service import MediaService
+from app.services.social_image_generation_service import SocialImageGenerationService
 from app.services.social_post_service import SocialPostService
 
 router = APIRouter(prefix="/social-posts", tags=["Social Drafts"])
@@ -68,6 +72,28 @@ def get_social_post(
     service: Annotated[SocialPostService, Depends(get_social_post_service)],
 ) -> SocialPostResponse:
     return service.get_post(post_id)
+
+
+@router.post(
+    "/{post_id}/generate-image",
+    response_model=MediaAssetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_social_post_image(
+    post_id: int,
+    payload: SocialImageGenerationRequest,
+    _admin: Annotated[AuthenticatedSession, Depends(require_csrf)],
+    post_service: Annotated[SocialPostService, Depends(get_social_post_service)],
+    image_service: Annotated[
+        SocialImageGenerationService, Depends(get_social_image_generation_service)
+    ],
+) -> MediaAssetResponse:
+    post = post_service.get_post(post_id)
+    asset = image_service.generate_for_website(
+        website_id=post.website_id,
+        prompt=payload.prompt,
+    )
+    return MediaService.to_response(asset)
 
 
 @router.patch("/{post_id}", response_model=SocialPostResponse)

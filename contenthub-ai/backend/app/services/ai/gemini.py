@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from app.core.logging import redact_text
 from app.services.ai.exceptions import AiPermanentError, AiResponseValidationError, AiTransientError
@@ -276,3 +277,28 @@ class GeminiSdkProvider:
         if not result.raw_text:
             raise AiResponseValidationError("Gemini returned an empty response body.")
         return result
+
+    def generate_image(
+        self,
+        *,
+        api_key: str,
+        model_name: str,
+        prompt: str,
+        timeout_seconds: int = 45,
+    ) -> bytes:
+        client = self._create_client(api_key=api_key, timeout_seconds=timeout_seconds)
+        try:
+            response = client.models.generate_images(
+                model=model_name,
+                prompt=prompt,
+                config=genai_types.GenerateImagesConfig(number_of_images=1),
+            )
+        except Exception as exc:
+            self._raise_mapped_sdk_error(exc)
+
+        generated_images = getattr(response, "generated_images", None) or []
+        image = getattr(generated_images[0], "image", None) if generated_images else None
+        image_bytes = getattr(image, "image_bytes", None)
+        if not isinstance(image_bytes, bytes) or not image_bytes:
+            raise AiResponseValidationError("Gemini Imagen returned no image data.")
+        return image_bytes

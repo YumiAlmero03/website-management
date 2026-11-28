@@ -84,6 +84,7 @@ def test_settings_require_auth_and_csrf_and_encrypt_secrets(
     anon_client = TestClient(authed.app)
     assert anon_client.get("/api/v1/settings").status_code == 401
     assert anon_client.get("/api/v1/logs/activity").status_code == 401
+    assert anon_client.get("/api/v1/logs/background").status_code == 401
 
 
 def test_activity_logs_pagination_filtering_and_redaction(
@@ -112,3 +113,13 @@ def test_activity_logs_pagination_filtering_and_redaction(
     assert "should_never_leak" not in first["message"]
     assert first["metadata"]["api_key"] == "[REDACTED]"
     assert first["metadata"]["setting"] == "backups.retention_days"
+
+    background = authed.get("/api/v1/logs/background")
+    assert background.status_code == 200
+    names = {item["function"] for item in background.json()["items"]}
+    assert names == {
+        "Website scanning",
+        "AI content generation",
+        "Social publishing",
+        "Google indexing",
+    }

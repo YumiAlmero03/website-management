@@ -237,6 +237,33 @@ def _ok_fb_handler(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"Unhandled FB endpoint: {request.method} {request.url}")
 
 
+def test_phase41_property_authorization_rejects_unrelated_domains() -> None:
+    from types import SimpleNamespace
+
+    from app.services.indexing_service import IndexingService
+
+    service = object.__new__(IndexingService)
+    url_property = SimpleNamespace(gsc_property_url="https://bygame.ph/")
+    assert service._property_authorizes(url_property, "https://bygame.ph/game/example") is True
+    assert service._property_authorizes(url_property, "https://example.com/game/example") is False
+
+    domain_property = SimpleNamespace(gsc_property_url="sc-domain:bygame.ph")
+    assert (
+        service._property_authorizes(
+            domain_property,
+            "https://www.bygame.ph/game/example",
+        )
+        is True
+    )
+    assert (
+        service._property_authorizes(
+            domain_property,
+            "https://example.com/game/example",
+        )
+        is False
+    )
+
+
 def test_profile_test_post_requires_csrf_and_creates_unpublished_review_draft(
     auth_client: tuple[TestClient, str],
     memory_repos: dict[str, Any],

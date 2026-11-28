@@ -138,6 +138,44 @@ async def upload_website_logo(
     )
 
 
+@router.post(
+    "/{website_id}/google-index-service-account",
+    response_model=WebsiteResponse,
+)
+async def upload_google_index_service_account(
+    website_id: int,
+    request: Request,
+    admin: Annotated[AuthenticatedSession, Depends(require_csrf)],
+    website_service: Annotated[WebsiteService, Depends(get_website_service)],
+    file: UploadFile = File(...),
+) -> WebsiteResponse:
+    file_bytes = await file.read(64 * 1024 + 1)
+    return website_service.upload_google_index_service_account(
+        website_id,
+        filename=file.filename or "",
+        file_bytes=file_bytes,
+        user_id=admin.user.id,
+        ip_address=extract_client_ip(request),
+    )
+
+
+@router.delete(
+    "/{website_id}/google-index-service-account",
+    response_model=WebsiteResponse,
+)
+def clear_google_index_service_account(
+    website_id: int,
+    request: Request,
+    admin: Annotated[AuthenticatedSession, Depends(require_csrf)],
+    website_service: Annotated[WebsiteService, Depends(get_website_service)],
+) -> WebsiteResponse:
+    return website_service.clear_google_index_service_account(
+        website_id,
+        user_id=admin.user.id,
+        ip_address=extract_client_ip(request),
+    )
+
+
 @router.post("/{website_id}/test", response_model=WebsiteConnectivityResponse)
 def test_website_connectivity(
     website_id: int,

@@ -82,6 +82,7 @@ class WebsiteCreateRequest(BaseModel):
     sitemap_url: str | None = Field(default=None, max_length=500)
     llms_url: str | None = Field(default=None, max_length=500)
     api_endpoint: str | None = Field(default=None, max_length=500)
+    gsc_property_url: str | None = Field(default=None, max_length=500)
     article_url_patterns: list[str] = Field(default_factory=list)
     excluded_url_patterns: list[str] = Field(default_factory=list)
     scan_interval_minutes: int = Field(default=1440, ge=15, le=43200)
@@ -124,6 +125,7 @@ class WebsiteUpdateRequest(BaseModel):
     sitemap_url: str | None = Field(default=None, max_length=500)
     llms_url: str | None = Field(default=None, max_length=500)
     api_endpoint: str | None = Field(default=None, max_length=500)
+    gsc_property_url: str | None = Field(default=None, max_length=500)
     article_url_patterns: list[str] | None = None
     excluded_url_patterns: list[str] | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=15, le=43200)
@@ -186,6 +188,8 @@ class WebsiteResponse(BaseModel):
     sitemap_url: str | None = None
     llms_url: str | None = None
     api_endpoint: str | None = None
+    gsc_property_url: str | None = None
+    gsc_service_account_configured: bool = False
     article_url_patterns: list[str] = Field(default_factory=list)
     excluded_url_patterns: list[str] = Field(default_factory=list)
     scan_interval_minutes: int

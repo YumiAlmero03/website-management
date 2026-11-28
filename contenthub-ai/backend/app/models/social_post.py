@@ -135,6 +135,10 @@ class SocialPost(TimestampMixin, Base):
     )
     last_publish_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_publish_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    backlink_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="not_checked", server_default="not_checked"
+    )
+    backlink_checked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
 
 class SocialPostRevision(Base):

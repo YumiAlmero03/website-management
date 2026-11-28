@@ -491,3 +491,9 @@ def test_contents_media_and_scan_api_endpoints(
     assert media_list.status_code == 200
     assert media_list.json()["meta"]["total_items"] >= 1
     assert client.get(f"/api/v1/media/{media.id}").status_code == 200
+    media_file = client.get(
+        f"/api/v1/media/{media.id}/file",
+        follow_redirects=False,
+    )
+    assert media_file.status_code == 307
+    assert media_file.headers["location"] == media.source_url

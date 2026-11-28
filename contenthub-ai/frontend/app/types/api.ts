@@ -115,6 +115,17 @@ export interface ActivityLogListResponse {
   meta: PaginationMeta
 }
 
+export interface BackgroundFunctionItem {
+  function: string
+  status: 'running' | 'idle' | string
+  count: number
+  details: string
+}
+
+export interface BackgroundFunctionsResponse {
+  items: BackgroundFunctionItem[]
+}
+
 export interface PhaseModuleStatus {
   key: string
   label: string
@@ -333,6 +344,8 @@ export interface Website {
   sitemap_url: string | null
   llms_url: string | null
   api_endpoint: string | null
+  gsc_property_url: string | null
+  gsc_service_account_configured: boolean
   article_url_patterns: string[]
   excluded_url_patterns: string[]
   scan_interval_minutes: number
@@ -514,6 +527,22 @@ export interface ContentListItem {
   focus_keyphrase?: string | null
   secondary_keywords?: string[]
   cannibalization_count?: number
+  google_index_status: string
+  google_index_verified_at: string | null
+  google_index_last_attempt_at: string | null
+  google_index_coverage_state: string | null
+  google_index_verdict: string | null
+}
+
+export interface IndexingStatus {
+  state: string
+  progress: number
+  total: number
+  processed: number
+  indexed: number
+  skipped: number
+  ready: number
+  failed: number
 }
 
 export interface ContentDetail extends ContentListItem {

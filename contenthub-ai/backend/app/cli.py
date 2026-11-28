@@ -34,6 +34,7 @@ from app.services.ai.gemini import GeminiSdkProvider
 from app.services.ai.generation_service import AiGenerationService
 from app.services.auth_service import AuthService
 from app.services.content_approval_service import ContentApprovalService
+from app.services.indexing_service import IndexingService
 from app.services.monitoring.health_service import HealthService
 from app.services.publishers.registry import PublisherAdapterRegistry
 from app.services.publishing_service import PublishingService
@@ -450,6 +451,77 @@ def run_due_publishes(*, limit: int = 10, service: PublishingService | None = No
         db.close()
 
 
+def run_indexing_job(*, job_id: int) -> int:
+    settings = get_settings()
+    db = get_session_factory()()
+    try:
+        service = IndexingService(
+            db=db,
+            settings=settings,
+            health_service=HealthService(settings=settings),
+        )
+        job = service.execute_job(job_id)
+        print(
+            f"Indexing Job #{job.id}: status={job.status}, "
+            f"processed={job.processed_count}/{job.requested_count}, "
+            f"indexed={job.indexed_count}, ready={job.ready_count}, "
+            f"skipped={job.skipped_count}, failed={job.failed_count}"
+        )
+        return 0 if job.status in {"completed", "deferred"} else 1
+    except (AppError, SQLAlchemyError) as exc:
+        print(f"Indexing job execution error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+def run_daily_indexing(*, service: IndexingService | None = None) -> int:
+    if service is not None:
+        summary = service.run_daily_indexing(execute_inline=True)
+        print(
+            f"Daily indexing summary: state={summary['state']}, "
+            f"processed={summary['processed']}/{summary['total']}, "
+            f"indexed={summary['indexed']}, ready={summary['ready']}, "
+            f"skipped={summary['skipped']}, failed={summary['failed']}"
+        )
+        return 0
+
+    settings = get_settings()
+    db = get_session_factory()()
+    lock_name = "contenthub_daily_indexing_lock"
+    lock_acquired = False
+    try:
+        got = db.execute(text("SELECT GET_LOCK(:name, 0)"), {"name": lock_name}).scalar()
+        if got != 1:
+            print("Another indexing worker already holds the MySQL advisory lock; exiting.")
+            return 0
+        lock_acquired = True
+        idx_service = IndexingService(
+            db=db,
+            settings=settings,
+            health_service=HealthService(settings=settings),
+        )
+        summary = idx_service.run_daily_indexing(execute_inline=True)
+        print(
+            f"Daily indexing summary: state={summary['state']}, "
+            f"processed={summary['processed']}/{summary['total']}, "
+            f"indexed={summary['indexed']}, ready={summary['ready']}, "
+            f"skipped={summary['skipped']}, failed={summary['failed']}"
+        )
+        return 0
+    except AppError as exc:
+        print(f"Daily indexing skipped: {exc.detail}")
+        return 0
+    except SQLAlchemyError as exc:
+        print(f"Daily indexing DB error ({type(exc).__name__}): {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if lock_acquired:
+            with contextlib.suppress(SQLAlchemyError):
+                db.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -507,6 +579,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process due scheduled/queued publishing jobs under a MySQL advisory lock.",
     )
     run_due_pub.add_argument("--limit", type=int, default=10, help="Max jobs per pass.")
+    run_indexing = subparsers.add_parser(
+        "run-indexing-job",
+        help="Execute a single persistent Google indexing job.",
+    )
+    run_indexing.add_argument("--job-id", type=int, required=True, help="IndexingJob ID.")
+    subparsers.add_parser(
+        "run-daily-indexing",
+        help="Run daily Google indexing batch across all active websites under an advisory lock.",
+    )
     return parser
 
 
@@ -534,6 +615,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_single_publish_job(job_id=args.job_id)
     if args.command == "run-due-publishes":
         return run_due_publishes(limit=args.limit)
+    if args.command == "run-indexing-job":
+        return run_indexing_job(job_id=args.job_id)
+    if args.command == "run-daily-indexing":
+        return run_daily_indexing()
 
     parser.print_help()
     return 1

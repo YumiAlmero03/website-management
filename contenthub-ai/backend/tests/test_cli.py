@@ -232,3 +232,28 @@ def test_cli_publishing_commands_and_parser(
     bad_db.execute.side_effect = SQLAlchemyError("db error")
     monkeypatch.setattr(cli, "get_session_factory", lambda: (lambda: bad_db))
     assert cli.run_due_publishes(limit=5) == 1
+
+
+def test_cli_daily_indexing_command_and_parser() -> None:
+    from unittest.mock import MagicMock
+
+    from app import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(["run-daily-indexing"])
+    assert args.command == "run-daily-indexing"
+
+    fake_indexing = MagicMock()
+    fake_indexing.run_daily_indexing.return_value = {
+        "state": "completed",
+        "progress": 10,
+        "total": 10,
+        "processed": 10,
+        "indexed": 10,
+        "skipped": 0,
+        "ready": 0,
+        "failed": 0,
+    }
+    assert cli.run_daily_indexing(service=fake_indexing) == 0
+    fake_indexing.run_daily_indexing.assert_called_once_with(execute_inline=True)
+

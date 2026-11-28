@@ -24,3 +24,14 @@ class ActivityLogItem(BaseModel):
 class ActivityLogListResponse(BaseModel):
     items: list[ActivityLogItem]
     meta: PaginationMeta
+
+
+class BackgroundFunctionItem(BaseModel):
+    function: str
+    status: str
+    count: int = 0
+    details: str
+
+
+class BackgroundFunctionsResponse(BaseModel):
+    items: list[BackgroundFunctionItem]

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import io
+import json
 from typing import Any
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.config import Settings
 from app.core.dependencies import get_http_fetcher
+from app.core.security import decrypt_secret
 from app.models.website_content import WebsiteContent
 from app.services.scanner.security import SafeHttpFetcher
 from tests.conftest import public_dns_resolver
@@ -315,3 +319,86 @@ def test_website_registration_rules_sources_discovery_and_logo_upload(
     assert scan_resp.status_code == 202
     assert scan_resp.json()["scan_mode"] == "full"
     assert memory_repos["dispatched_scans"] == [scan_resp.json()["id"]]
+
+
+def test_google_index_service_account_upload_is_encrypted_and_revocable(
+    test_settings: Settings,
+    auth_client: tuple[TestClient, str],
+    memory_repos: dict[str, Any],
+) -> None:
+    client, csrf = auth_client
+    created = client.post(
+        "/api/v1/websites",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "Index Test", "domain": "index-test.example.com"},
+    )
+    assert created.status_code == 201
+    website_id = created.json()["id"]
+    property_update = client.patch(
+        f"/api/v1/websites/{website_id}",
+        headers={"X-CSRF-Token": csrf},
+        json={"gsc_property_url": "https://index-test.example.com/"},
+    )
+    assert property_update.status_code == 200
+    assert property_update.json()["gsc_property_url"] == "https://index-test.example.com/"
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    raw_json = json.dumps({
+        "type": "service_account",
+        "project_id": "test-project",
+        "private_key_id": "test-key-id",
+        "private_key": private_key_pem,
+        "client_email": "indexer@test-project.iam.gserviceaccount.com",
+        "client_id": "123456789",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    })
+
+    upload = client.post(
+        f"/api/v1/websites/{website_id}/google-index-service-account",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("service-account.json", raw_json.encode(), "application/json")},
+    )
+    assert upload.status_code == 200
+    assert upload.json()["gsc_service_account_configured"] is True
+    assert "private_key" not in upload.text
+    saved_site = memory_repos["websites"].get_by_id(website_id)
+    assert saved_site.encrypted_gsc_service_account_json != raw_json
+    assert (
+        decrypt_secret(
+            saved_site.encrypted_gsc_service_account_json,
+            test_settings.app_encryption_key,
+        )
+        == raw_json
+    )
+
+    rejected = client.post(
+        f"/api/v1/websites/{website_id}/google-index-service-account",
+        headers={"X-CSRF-Token": csrf},
+        files={
+            "file": (
+                "service-account.json",
+                json.dumps({
+                    "type": "service_account",
+                    "client_email": "indexer@test-project.iam.gserviceaccount.com",
+                    "private_key": private_key_pem,
+                    "token_uri": "https://attacker.example/token",
+                }).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert rejected.status_code == 422
+    assert saved_site.encrypted_gsc_service_account_json is not None
+
+    removed = client.delete(
+        f"/api/v1/websites/{website_id}/google-index-service-account",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert removed.status_code == 200
+    assert removed.json()["gsc_service_account_configured"] is False
+    assert saved_site.encrypted_gsc_service_account_json is None

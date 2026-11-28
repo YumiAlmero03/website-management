@@ -17,6 +17,7 @@ import {
 import type {
   ContentListItem,
   ContentListResponse,
+  IndexingStatus,
   ScanItem,
   ScanItemListResponse,
   ScanLog,
@@ -75,7 +76,21 @@ const triggeringScan = ref(false)
 const testingConnectivity = ref(false)
 const discoveringSources = ref(false)
 const uploadingLogo = ref(false)
+const uploadingGscServiceAccount = ref(false)
+const removingGscServiceAccount = ref(false)
 const savingSettings = ref(false)
+const indexingStatus = ref<IndexingStatus>({
+  state: 'idle',
+  progress: 0,
+  total: 0,
+  processed: 0,
+  indexed: 0,
+  skipped: 0,
+  ready: 0,
+  failed: 0,
+})
+const indexingStatusError = ref<string | null>(null)
+let indexingPoll: ReturnType<typeof setInterval> | null = null
 
 const connectivityResult = ref<WebsiteConnectivity | null>(null)
 const discoverResult = ref<WebsiteDiscoverResult | null>(null)
@@ -125,6 +140,7 @@ const settingsForm = ref({
   sitemap_url: '',
   llms_url: '',
   api_endpoint: '',
+  gsc_property_url: '',
   excluded_url_patterns_text: '',
   scan_interval_minutes: 1440,
   crawl_batch_size: 100,
@@ -151,6 +167,17 @@ const resumableScan = computed(() =>
 const canResumeScan = computed(
   () => Boolean(resumableScan.value) || (website.value?.content_counts.pending ?? 0) > 0,
 )
+const indexingInProgress = computed(
+  () => indexingStatus.value.state === 'queued' || indexingStatus.value.state === 'processing',
+)
+const indexingButtonLabel = computed(() => {
+  if (indexingInProgress.value) {
+    return `Indexing (${indexingStatus.value.progress}/${indexingStatus.value.total})`
+  }
+  if (indexingStatus.value.state === 'completed') return 'Completed'
+  if (indexingStatus.value.state === 'deferred') return 'Deferred'
+  return 'Run Indexing'
+})
 
 function parseCsvOrLines(raw: string): string[] {
   return raw
@@ -186,6 +213,7 @@ function syncSettingsForm(site: Website) {
     sitemap_url: site.sitemap_url || '',
     llms_url: site.llms_url || '',
     api_endpoint: site.api_endpoint || '',
+    gsc_property_url: site.gsc_property_url || '',
     excluded_url_patterns_text: site.excluded_url_patterns.join('\n'),
     scan_interval_minutes: site.scan_interval_minutes,
     crawl_batch_size: site.crawl_batch_size,
@@ -193,6 +221,76 @@ function syncSettingsForm(site: Website) {
     auto_scan: site.auto_scan,
   }
 }
+
+function stopIndexingPolling() {
+  if (indexingPoll) {
+    clearInterval(indexingPoll)
+    indexingPoll = null
+  }
+}
+
+function ensureIndexingPolling() {
+  if (indexingPoll) return
+  indexingPoll = setInterval(() => {
+    void refreshIndexingStatus()
+  }, 3000)
+}
+
+async function refreshIndexingStatus() {
+  try {
+    indexingStatus.value = await request<IndexingStatus>(
+      `/api/v1/indexing/websites/${websiteId.value}/status`,
+    )
+    indexingStatusError.value = null
+    if (indexingInProgress.value) ensureIndexingPolling()
+    else stopIndexingPolling()
+  }
+  catch (err) {
+    indexingStatusError.value = extractErrorMessage(err, 'Could not load Google indexing status.')
+    stopIndexingPolling()
+  }
+}
+
+async function runIndexing() {
+  try {
+    indexingStatus.value = await request<IndexingStatus>(
+      `/api/v1/indexing/websites/${websiteId.value}/run`,
+      { method: 'POST' },
+    )
+    indexingStatusError.value = null
+    ensureIndexingPolling()
+    toast.add({
+      title: 'Indexing started',
+      description: 'The background check will continue if you leave this page.',
+      color: 'success',
+    })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Could not start indexing',
+      description: extractErrorMessage(err, 'An indexing job could not be started.'),
+      color: 'error',
+    })
+  }
+}
+
+watch(() => indexingStatus.value.state, (state) => {
+  if (state === 'completed') {
+    toast.add({
+      title: 'Indexing completed',
+      description: `${indexingStatus.value.processed} processed · ${indexingStatus.value.indexed} indexed · ${indexingStatus.value.skipped} skipped · ${indexingStatus.value.ready} ready to request · ${indexingStatus.value.failed} failed`,
+      color: 'success',
+    })
+    if (activeTab.value === 'content') void loadSection('content', true)
+  }
+  if (state === 'deferred') {
+    toast.add({
+      title: 'Indexing deferred',
+      description: 'Resource Guardian paused the job. Select Deferred to resume it later.',
+      color: 'warning',
+    })
+  }
+})
 
 function stopPolling() {
   pollVersion++
@@ -317,6 +415,7 @@ function loadActiveSection(force = false) {
 async function loadAll() {
   const version = ++workspaceVersion
   stopPolling()
+  stopIndexingPolling()
   sectionStates.clear()
   scanLogs.value = []
   loading.value = true
@@ -326,6 +425,7 @@ async function loadAll() {
     if (version !== workspaceVersion) return
     website.value = siteData
     syncSettingsForm(siteData)
+    void refreshIndexingStatus()
     void loadSection('history')
     loadActiveSection()
   }
@@ -554,6 +654,65 @@ async function handleLogoUpload(event: Event) {
   }
 }
 
+async function handleGscServiceAccountUpload(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  if (!file.name.toLowerCase().endsWith('.json') || file.size > 64 * 1024) {
+    toast.add({
+      title: 'Invalid service-account file',
+      description: 'Select a Google service-account .json file up to 64 KB.',
+      color: 'error',
+    })
+    target.value = ''
+    return
+  }
+
+  uploadingGscServiceAccount.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const updated = await request<Website>(
+      `/api/v1/websites/${websiteId.value}/google-index-service-account`,
+      { method: 'POST', body: fd },
+    )
+    website.value = updated
+    toast.add({ title: 'Google indexing service account saved securely', color: 'success' })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Service-account upload failed',
+      description: extractErrorMessage(err, 'Could not save this Google service-account file.'),
+      color: 'error',
+    })
+  }
+  finally {
+    uploadingGscServiceAccount.value = false
+    target.value = ''
+  }
+}
+
+async function removeGscServiceAccount() {
+  removingGscServiceAccount.value = true
+  try {
+    website.value = await request<Website>(
+      `/api/v1/websites/${websiteId.value}/google-index-service-account`,
+      { method: 'DELETE' },
+    )
+    toast.add({ title: 'Google indexing service account removed', color: 'success' })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Could not remove service account',
+      description: extractErrorMessage(err, 'Could not remove the Google service-account key.'),
+      color: 'error',
+    })
+  }
+  finally {
+    removingGscServiceAccount.value = false
+  }
+}
+
 async function saveWebsiteSettings() {
   savingSettings.value = true
   try {
@@ -585,6 +744,7 @@ async function saveWebsiteSettings() {
       sitemap_url: f.sitemap_url.trim() || null,
       llms_url: f.llms_url.trim() || null,
       api_endpoint: f.api_endpoint.trim() || null,
+      gsc_property_url: f.gsc_property_url.trim() || null,
       excluded_url_patterns: parseCsvOrLines(f.excluded_url_patterns_text),
       scan_interval_minutes: Number(f.scan_interval_minutes) || 1440,
       crawl_batch_size: Number(f.crawl_batch_size) || 100,
@@ -631,6 +791,17 @@ watch(inspectFilter, () => {
 })
 
 watch(websiteId, () => {
+  stopIndexingPolling()
+  indexingStatus.value = {
+    state: 'idle',
+    progress: 0,
+    total: 0,
+    processed: 0,
+    indexed: 0,
+    skipped: 0,
+    ready: 0,
+    failed: 0,
+  }
   website.value = null
   contentTabFilter.value = 'all'
   keywordSearch.value = ''
@@ -654,6 +825,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPolling()
+  stopIndexingPolling()
   workspaceVersion++
   sectionStates.clear()
 })
@@ -1571,6 +1743,90 @@ onUnmounted(() => {
             <span>Single-Source Manual Override Mode</span>
           </label>
         </div>
+
+        <section class="space-y-4 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+          <div>
+            <h3 class="text-sm font-semibold">Google Index Checker — Articles &amp; Posts</h3>
+            <p class="mt-1 text-slate-500">
+              Configure the authorized Search Console property and service account used to inspect this website's article and post URLs.
+              Credentials are encrypted before storage. This uses URL Inspection, not the restricted Indexing API.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <UButton
+              type="button"
+              color="primary"
+              size="sm"
+              :loading="indexingInProgress"
+              :disabled="indexingInProgress"
+              :aria-label="indexingStatus.state === 'completed' ? 'Run the next eligible indexing batch' : undefined"
+              @click="runIndexing"
+            >
+              {{ indexingButtonLabel }}
+            </UButton>
+            <span
+              v-if="indexingStatus.state === 'completed'"
+              class="text-slate-500"
+            >
+              Last batch complete. Run again to check the next eligible URLs.
+            </span>
+            <span
+              v-if="indexingStatus.state === 'deferred'"
+              class="text-amber-700 dark:text-amber-300"
+            >
+              Resource Guardian deferred this job. Select Deferred to resume.
+            </span>
+          </div>
+          <p
+            v-if="indexingStatusError"
+            class="text-rose-600 dark:text-rose-400"
+          >
+            {{ indexingStatusError }}
+          </p>
+          <div class="max-w-2xl">
+            <label class="mb-1 block font-medium">Search Console Property</label>
+            <UInput
+              v-model="settingsForm.gsc_property_url"
+              placeholder="sc-domain:example.com or https://example.com/"
+            />
+            <p class="mt-1 text-[11px] text-slate-500">
+              Enter a property the uploaded service account can access, then select Save All Changes.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <label class="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-3 py-2 font-medium hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
+              <span>{{ uploadingGscServiceAccount ? 'Uploading...' : 'Upload Service Account JSON' }}</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                class="hidden"
+                :disabled="uploadingGscServiceAccount"
+                @change="handleGscServiceAccountUpload"
+              >
+            </label>
+            <UBadge
+              :color="website.gsc_service_account_configured ? 'success' : 'neutral'"
+              variant="subtle"
+            >
+              {{ website.gsc_service_account_configured ? 'Service account uploaded' : 'No service account uploaded' }}
+            </UBadge>
+            <UButton
+              v-if="website.gsc_service_account_configured"
+              type="button"
+              color="error"
+              variant="outline"
+              size="xs"
+              :loading="removingGscServiceAccount"
+              @click="removeGscServiceAccount"
+            >
+              <Trash2 class="mr-1 h-3.5 w-3.5" />
+              Remove Key
+            </UButton>
+          </div>
+          <p class="text-[11px] text-slate-500">
+            Add the service account's email as a user of the matching Search Console property before running indexing.
+          </p>
+        </section>
       </form>
     </template>
 

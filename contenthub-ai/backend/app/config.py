@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     oauth_allowed_redirect_hosts: str = ""
     meta_graph_api_version: str = "v27.0"
     linkedin_api_version: str = "202610"
+    google_service_account_json: str = ""
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    indexing_daily_schedule_enabled: bool = True
+    indexing_daily_run_hour: int = Field(default=11, ge=0, le=23)
+    indexing_daily_run_minute: int = Field(default=0, ge=0, le=59)
 
     @field_validator("app_timezone")
     @classmethod

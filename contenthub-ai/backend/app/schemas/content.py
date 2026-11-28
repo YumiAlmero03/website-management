@@ -82,6 +82,11 @@ class ContentListItemResponse(BaseModel):
     focus_keyphrase: str | None = None
     secondary_keywords: list[str] = Field(default_factory=list)
     cannibalization_count: int = 0
+    google_index_status: str = "uninspected"
+    google_index_verified_at: datetime | None = None
+    google_index_last_attempt_at: datetime | None = None
+    google_index_coverage_state: str | None = None
+    google_index_verdict: str | None = None
 
 
 class ContentDetailResponse(ContentListItemResponse):

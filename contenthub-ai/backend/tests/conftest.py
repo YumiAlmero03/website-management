@@ -621,6 +621,7 @@ class InMemoryContentRepository:
         date_to: datetime | None = None,
         search: str | None = None,
         change_filter: str | None = None,
+        google_index_status: str | None = None,
         include_excluded: bool = False,
         sort_by: str = "last_discovered_at",
         sort_dir: str = "desc",
@@ -654,6 +655,19 @@ class InMemoryContentRepository:
             rows = [r for r in rows if r.status == "updated"]
         elif change_filter == "new":
             rows = [r for r in rows if r.status in {"discovered", "extracted", "optimized"}]
+        if google_index_status:
+            if google_index_status == "not_indexed":
+                rows = [
+                    r
+                    for r in rows
+                    if getattr(r, "google_index_status", "uninspected") != "indexed"
+                ]
+            else:
+                rows = [
+                    r
+                    for r in rows
+                    if getattr(r, "google_index_status", "uninspected") == google_index_status
+                ]
         if date_from is not None:
             cutoff = date_from.replace(tzinfo=None)
             rows = [r for r in rows if r.first_discovered_at >= cutoff]

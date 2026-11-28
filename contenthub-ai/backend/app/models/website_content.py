@@ -143,6 +143,14 @@ class WebsiteContent(TimestampMixin, Base):
     )
     near_duplicate_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    google_index_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="uninspected", server_default="uninspected"
+    )
+    google_index_verified_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    google_index_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    google_index_coverage_state: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    google_index_verdict: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    google_index_inspection_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     first_discovered_at: Mapped[datetime] = mapped_column(
         DateTime(),

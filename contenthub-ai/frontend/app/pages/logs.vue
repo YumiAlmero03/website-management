@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
-import type { ActivityLogListResponse } from '~/types/api'
+import type {
+  ActivityLogListResponse,
+  BackgroundFunctionsResponse,
+} from '~/types/api'
 import { extractErrorMessage, formatDateTime } from '~/utils/format'
 
 const { request } = useApiClient()
@@ -15,12 +18,15 @@ const pageSize = ref(20)
 const selectedCategory = ref('all')
 const selectedLevel = ref('all')
 const searchQuery = ref('')
+const backgroundFunctions = ref<BackgroundFunctionsResponse['items']>([])
+let backgroundPoll: ReturnType<typeof setInterval> | null = null
 
 const categoryItems = [
   { label: 'All Categories', value: 'all' },
   { label: 'Authentication', value: 'auth' },
   { label: 'Settings', value: 'settings' },
   { label: 'System', value: 'system' },
+  { label: 'Background', value: 'background' },
 ]
 
 const levelItems = [
@@ -59,6 +65,16 @@ async function fetchLogs() {
   }
 }
 
+async function fetchBackgroundFunctions() {
+  try {
+    const response = await request<BackgroundFunctionsResponse>('/api/v1/logs/background')
+    backgroundFunctions.value = response.items
+  }
+  catch {
+    backgroundFunctions.value = []
+  }
+}
+
 function applyFilters() {
   page.value = 1
   void fetchLogs()
@@ -79,7 +95,14 @@ function goNext() {
 }
 
 onMounted(() => {
-  void fetchLogs()
+  void Promise.all([fetchLogs(), fetchBackgroundFunctions()])
+  backgroundPoll = setInterval(() => {
+    void fetchBackgroundFunctions()
+  }, 10_000)
+})
+
+onUnmounted(() => {
+  if (backgroundPoll) clearInterval(backgroundPoll)
 })
 </script>
 
@@ -104,6 +127,48 @@ onMounted(() => {
         <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
         Refresh
       </UButton>
+    </div>
+
+    <div class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+      <div class="mb-3 flex items-center justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            Background Functions
+          </h2>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400">
+            Live persistent worker status. Refreshes every 10 seconds.
+          </p>
+        </div>
+        <UButton
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          @click="fetchBackgroundFunctions"
+        >
+          <RefreshCw class="h-3.5 w-3.5" />
+        </UButton>
+      </div>
+      <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <div
+          v-for="worker in backgroundFunctions"
+          :key="worker.function"
+          class="rounded-md border border-slate-200 p-3 dark:border-slate-800"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-medium text-slate-800 dark:text-slate-200">{{ worker.function }}</span>
+            <UBadge
+              :color="worker.status === 'running' ? 'warning' : 'neutral'"
+              variant="subtle"
+              size="xs"
+            >
+              {{ worker.status }}{{ worker.count ? ` · ${worker.count}` : '' }}
+            </UBadge>
+          </div>
+          <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            {{ worker.details }}
+          </p>
+        </div>
+      </div>
     </div>
 
     <!-- Filters -->

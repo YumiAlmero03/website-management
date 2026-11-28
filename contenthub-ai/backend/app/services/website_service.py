@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from datetime import timedelta
 from urllib.parse import urlparse
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+
 from app.config import Settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
+from app.core.security import encrypt_secret
 from app.models.base import ensure_utc, utc_now
 from app.models.website import Website
 from app.models.website_discovery_source import WebsiteDiscoverySource
@@ -47,6 +52,8 @@ from app.services.scanner.security import SafeHttpFetcher, validate_outbound_url
 from app.services.scanner.url_normalizer import normalize_domain, validate_url_patterns
 
 ALLOWED_RULE_MATCH_MODES: tuple[str, ...] = ("prefix", "glob", "exact", "regex")
+MAX_GSC_SERVICE_ACCOUNT_BYTES = 64 * 1024
+GOOGLE_OAUTH_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
 def _validate_optional_http_url(url: str | None, *, field_name: str) -> str | None:
@@ -162,6 +169,8 @@ class WebsiteService:
             sitemap_url=site.sitemap_url,
             llms_url=site.llms_url,
             api_endpoint=site.api_endpoint,
+            gsc_property_url=site.gsc_property_url,
+            gsc_service_account_configured=bool(site.encrypted_gsc_service_account_json),
             article_url_patterns=list(site.article_url_patterns or []),
             excluded_url_patterns=list(site.excluded_url_patterns or []),
             scan_interval_minutes=site.scan_interval_minutes,
@@ -395,6 +404,11 @@ class WebsiteService:
                 "api_endpoint": _validate_optional_http_url(
                     payload.api_endpoint, field_name="api_endpoint"
                 ),
+                "gsc_property_url": (
+                    payload.gsc_property_url.strip()
+                    if payload.gsc_property_url and payload.gsc_property_url.strip()
+                    else None
+                ),
                 "article_url_patterns": include_patterns,
                 "excluded_url_patterns": exclude_patterns,
                 "scan_interval_minutes": payload.scan_interval_minutes,
@@ -522,6 +536,10 @@ class WebsiteService:
                 max_len = 32 if list_field == "secondary_languages" else 120
                 updates[list_field] = _clean_string_list(raw[list_field], max_len=max_len)
 
+        if "gsc_property_url" in raw:
+            value = str(raw["gsc_property_url"] or "").strip()
+            updates["gsc_property_url"] = value or None
+
         for url_field in ("rss_url", "sitemap_url", "llms_url", "api_endpoint"):
             if url_field in raw:
                 updates[url_field] = _validate_optional_http_url(
@@ -644,6 +662,96 @@ class WebsiteService:
             level="info",
             message=f"Uploaded brand logo for '{site.name}'.",
             metadata={"website_id": site.id, "media_id": asset.id, "filename": filename[:120]},
+            ip_address=ip_address,
+        )
+        return self._to_response(updated)
+
+    def upload_google_index_service_account(
+        self,
+        website_id: int,
+        *,
+        filename: str,
+        file_bytes: bytes,
+        user_id: int,
+        ip_address: str | None,
+    ) -> WebsiteResponse:
+        site = self.website_repo.get_by_id(website_id)
+        if site is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+        if not filename.lower().endswith(".json"):
+            raise ValidationAppError("Upload a Google service-account .json file.")
+        if not file_bytes or len(file_bytes) > MAX_GSC_SERVICE_ACCOUNT_BYTES:
+            raise ValidationAppError("Service-account JSON must be between 1 byte and 64 KB.")
+        try:
+            raw_json = file_bytes.decode("utf-8")
+            account = json.loads(raw_json)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValidationAppError("The uploaded file is not valid UTF-8 JSON.") from exc
+        if not isinstance(account, dict) or account.get("type") != "service_account":
+            raise ValidationAppError("Upload a Google Cloud service-account JSON key.")
+
+        private_key_data = account.get("private_key")
+        client_email = account.get("client_email")
+        token_uri = account.get("token_uri", GOOGLE_OAUTH_TOKEN_URI)
+        if (
+            not isinstance(private_key_data, str)
+            or not private_key_data.strip()
+            or not isinstance(client_email, str)
+            or not client_email.strip()
+            or token_uri != GOOGLE_OAUTH_TOKEN_URI
+        ):
+            raise ValidationAppError("The service-account JSON is missing required Google fields.")
+        try:
+            private_key = serialization.load_pem_private_key(
+                private_key_data.encode("utf-8"),
+                password=None,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValidationAppError("The service-account private key is invalid.") from exc
+        if not isinstance(private_key, RSAPrivateKey):
+            raise ValidationAppError("The service-account key must be an RSA private key.")
+
+        ciphertext = encrypt_secret(raw_json, self.settings.app_encryption_key)
+        updated = self.website_repo.update(
+            website_id,
+            {"encrypted_gsc_service_account_json": ciphertext},
+        )
+        assert updated is not None
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.google_index_credentials_uploaded",
+            level="info",
+            message=f"Updated Google indexing credentials for '{updated.name}'.",
+            metadata={"website_id": updated.id},
+            ip_address=ip_address,
+        )
+        return self._to_response(updated)
+
+    def clear_google_index_service_account(
+        self,
+        website_id: int,
+        *,
+        user_id: int,
+        ip_address: str | None,
+    ) -> WebsiteResponse:
+        site = self.website_repo.get_by_id(website_id)
+        if site is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+        updated = self.website_repo.update(
+            website_id,
+            {"encrypted_gsc_service_account_json": None},
+        )
+        assert updated is not None
+        self.activity_repo.create(
+            user_id=user_id,
+            actor_type="admin",
+            category="websites",
+            action="website.google_index_credentials_cleared",
+            level="info",
+            message=f"Removed Google indexing credentials for '{updated.name}'.",
+            metadata={"website_id": updated.id},
             ip_address=ip_address,
         )
         return self._to_response(updated)

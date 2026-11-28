@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app.core.dependencies import get_media_service, require_admin
 from app.schemas.media import MediaAssetListResponse, MediaAssetResponse
@@ -33,11 +33,19 @@ def get_media(
     return media_service.get_media(media_id)
 
 
-@router.get("/{media_id}/file")
+@router.get("/{media_id}/file", response_model=None)
 def get_media_file(
     media_id: int,
     _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
     media_service: Annotated[MediaService, Depends(get_media_service)],
-) -> FileResponse:
+) -> Response:
+    asset = media_service.media_repo.get_by_id(media_id)
+    if (
+        asset is not None
+        and not asset.file_path
+        and asset.source_url
+        and (asset.source_url.startswith("https://") or asset.source_url.startswith("http://"))
+    ):
+        return RedirectResponse(url=asset.source_url, status_code=307)
     file_path, media_type = media_service.resolve_local_file(media_id)
     return FileResponse(path=file_path, media_type=media_type)

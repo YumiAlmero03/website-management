@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.cli import run_daily_indexing
 from app.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger
@@ -20,6 +25,7 @@ from app.routers import (
     contents,
     dashboard,
     health,
+    indexing,
     logs,
     media,
     publishing,
@@ -33,6 +39,32 @@ from app.routers import settings as settings_router
 logger = get_logger("main")
 
 
+async def _daily_indexing_scheduler_loop(cfg: Settings) -> None:
+    """Trigger daily indexing at the configured local time (default 11:00 AM Asia/Manila)."""
+    tz = ZoneInfo(cfg.app_timezone)
+    last_triggered_date: str | None = None
+    while True:
+        try:
+            now_local = datetime.now(tz)
+            today_key = now_local.strftime("%Y-%m-%d")
+            if (
+                now_local.hour == cfg.indexing_daily_run_hour
+                and now_local.minute == cfg.indexing_daily_run_minute
+                and last_triggered_date != today_key
+            ):
+                last_triggered_date = today_key
+                logger.info(
+                    "Running scheduled daily indexing at %02d:%02d (%s)",
+                    cfg.indexing_daily_run_hour,
+                    cfg.indexing_daily_run_minute,
+                    cfg.app_timezone,
+                )
+                await asyncio.to_thread(run_daily_indexing)
+        except Exception as exc:  # pragma: no cover - defensive background loop guard
+            logger.warning("Daily indexing scheduler check failed: %s", type(exc).__name__)
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     cfg = get_settings()
@@ -40,9 +72,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("ContentHub AI backend starting (env=%s, version=%s)", cfg.app_env, cfg.app_version)
     if cfg.is_root_db_user:
         logger.warning("DB_USER is configured as 'root'; switch to a least-privilege MySQL user.")
-    yield
-    reset_engine()
-    logger.info("ContentHub AI backend shut down cleanly.")
+    scheduler_task: asyncio.Task[None] | None = None
+    if cfg.indexing_daily_schedule_enabled:
+        scheduler_task = asyncio.create_task(_daily_indexing_scheduler_loop(cfg))
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await scheduler_task
+        reset_engine()
+        logger.info("ContentHub AI backend shut down cleanly.")
 
 
 def create_app(settings_override: Settings | None = None) -> FastAPI:
@@ -110,6 +151,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(ai.router, prefix=api_prefix)
     app.include_router(social_posts.router, prefix=api_prefix)
     app.include_router(publishing.router, prefix=api_prefix)
+    app.include_router(indexing.router, prefix=api_prefix)
 
     return app
 

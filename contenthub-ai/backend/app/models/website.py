@@ -90,6 +90,9 @@ class Website(TimestampMixin, Base):
     sitemap_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     llms_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     api_endpoint: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    gsc_property_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    gsc_property_verified_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    encrypted_gsc_service_account_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     article_url_patterns: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     excluded_url_patterns: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 

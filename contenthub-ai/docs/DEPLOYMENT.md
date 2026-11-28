@@ -106,3 +106,11 @@ Manual single-job execution (used internally by detached Publish Now dispatchers
 ```bash
 cd /www/wwwroot/contenthub-ai/backend && .venv/bin/python -m app.cli run-publish-job --job-id <JOB_ID>
 ```
+
+### 4. Daily Google Indexing at 11:00 AM (`Asia/Manila`)
+
+In addition to the built-in FastAPI daily 11:00 AM scheduler (`INDEXING_DAILY_SCHEDULE_ENABLED=true`, `INDEXING_DAILY_RUN_HOUR=11`, `INDEXING_DAILY_RUN_MINUTE=0`), configure a daily 11:00 AM (`0 11 * * *`) cron job so scheduled indexing runs even if the web process is restarted:
+
+```bash
+0 11 * * * cd /www/wwwroot/contenthub-ai/backend && .venv/bin/python -m app.cli run-daily-indexing >> /www/wwwlogs/contenthub-indexing-cron.log 2>&1
+```

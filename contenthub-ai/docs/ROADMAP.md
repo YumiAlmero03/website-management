@@ -43,6 +43,23 @@ Development proceeds strictly one phase at a time. Each phase ends with validati
 - FullCalendar Standard Publishing Calendar (Month/Week/Day, drag-and-drop rescheduling, UTC storage -> `Asia/Manila` display)
 - Publishing history & status verification
 
+## Phase 4.1 — One-Click Google Indexing *(Completed — Ready for Review)*
+- One Run Indexing button in the existing Content Library with a 10-URL maximum.
+- Automatic Google Index status column and retained status filter; no URL selection, URL input, checkboxes, or separate indexing page.
+- Persistent MySQL indexing jobs, existing CLI/Resource Guardian worker patterns, overlap prevention, and page-leaving-safe background progress.
+- New-published and not-yet-inspected URLs prioritized, confirmed indexed URLs excluded, and active/pending URLs skipped.
+- Google URL Inspection API verification limited to authorized Search Console properties.
+- Python/optional browser technical checks, supported request-readiness preparation, and explicit "never confirmed" inspection/request history.
+- Published social permalink capture and background backlink verification retained in the Phase 4 publishing workflow.
+
+### Phase 4.1 Acceptance Criteria
+- Clicking Run Indexing selects up to 10 distinct eligible database URLs for the selected website; no manual URL selection is required.
+- Repeated runs advance through unattempted eligible records and never resubmit URLs already confirmed indexed.
+- Button states cover queued/processing progress, completed counts, and deferred/overlap protection.
+- Completion notification reports processed, indexed, skipped, ready-to-request, and failed counts.
+- Ordinary pages do not use the restricted Google Indexing API; only supported Search Console inspection/request workflows are used.
+- A successful inspection verdict plus indexed coverage state is the only condition recorded as confirmed indexed.
+
 ## Phase 5 — Editorial Planner & Article Editor
 - Keyword research & Google Search Console / Google Trends RSS integration
 - Content gap analysis, topic clustering, content pillars, weekly/monthly editorial plans

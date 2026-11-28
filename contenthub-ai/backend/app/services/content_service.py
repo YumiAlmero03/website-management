@@ -200,6 +200,11 @@ class ContentService:
             focus_keyphrase=kw.focus_keyphrase if kw else None,
             secondary_keywords=list(kw.secondary_keywords_json or []) if kw else [],
             cannibalization_count=cannibal_count,
+            google_index_status=row.google_index_status or "uninspected",
+            google_index_verified_at=ensure_utc(row.google_index_verified_at),
+            google_index_last_attempt_at=ensure_utc(row.google_index_last_attempt_at),
+            google_index_coverage_state=row.google_index_coverage_state,
+            google_index_verdict=row.google_index_verdict,
         )
 
     def _to_detail(self, row: WebsiteContent) -> ContentDetailResponse:
@@ -260,6 +265,7 @@ class ContentService:
         date_to: datetime | None = None,
         search: str | None = None,
         change_filter: str | None = None,
+        google_index_status: str | None = None,
         include_excluded: bool = False,
         sort_by: str = "last_discovered_at",
         sort_dir: str = "desc",
@@ -296,6 +302,7 @@ class ContentService:
             date_to=date_to,
             search=search,
             change_filter=change_filter,
+            google_index_status=google_index_status,
             include_excluded=include_excluded,
             sort_by=sort_by,
             sort_dir=sort_dir,

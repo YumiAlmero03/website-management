@@ -30,6 +30,7 @@ class ContentRepositoryProtocol(Protocol):
         date_to: datetime | None = None,
         search: str | None = None,
         change_filter: str | None = None,
+        google_index_status: str | None = None,
         include_excluded: bool = False,
         sort_by: str = "last_discovered_at",
         sort_dir: str = "desc",
@@ -122,6 +123,7 @@ class SQLAlchemyContentRepository:
         date_to: datetime | None = None,
         search: str | None = None,
         change_filter: str | None = None,
+        google_index_status: str | None = None,
         include_excluded: bool = False,
         sort_by: str = "last_discovered_at",
         sort_dir: str = "desc",
@@ -156,6 +158,11 @@ class SQLAlchemyContentRepository:
             filters.append(WebsiteContent.status == "updated")
         elif change_filter == "new":
             filters.append(WebsiteContent.status.in_(["discovered", "extracted", "optimized"]))
+        if google_index_status:
+            if google_index_status == "not_indexed":
+                filters.append(WebsiteContent.google_index_status != "indexed")
+            else:
+                filters.append(WebsiteContent.google_index_status == google_index_status)
         if date_from is not None:
             filters.append(WebsiteContent.first_discovered_at >= date_from.replace(tzinfo=None))
         if date_to is not None:
