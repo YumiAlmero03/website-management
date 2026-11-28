@@ -118,6 +118,7 @@ class WebsiteService:
             total_extracted=raw_stats["total_extracted"],
             homepage=raw_stats["homepage_count"],
             page=raw_stats["page_count"],
+            game_page=raw_stats.get("game_page_count", 0),
             blog_index=raw_stats["blog_index_count"],
             blog_post=raw_stats["blog_post_count"],
             category=raw_stats.get("category_count", 0),
@@ -144,6 +145,7 @@ class WebsiteService:
             secondary_languages=list(site.secondary_languages or []),
             tone=site.tone,
             target_keywords=list(site.target_keywords or []),
+            keyword_bank=list(site.keyword_bank or []),
             restricted_keywords=list(site.restricted_keywords or []),
             default_hashtags=list(site.default_hashtags or []),
             default_cta=site.default_cta,
@@ -164,6 +166,8 @@ class WebsiteService:
             crawl_max_urls_per_run=site.crawl_max_urls_per_run,
             auto_scan=site.auto_scan,
             auto_generate=site.auto_generate,
+            auto_generate_require_published_at=site.auto_generate_require_published_at,
+            auto_generate_context_mode=site.auto_generate_context_mode,
             initial_scan_completed=site.initial_scan_completed,
             baseline_mode=site.baseline_mode,
             baseline_after_date=ensure_utc(site.baseline_after_date),
@@ -342,6 +346,7 @@ class WebsiteService:
                 "secondary_languages": _clean_string_list(payload.secondary_languages, max_len=32),
                 "tone": payload.tone.strip() if payload.tone else None,
                 "target_keywords": _clean_string_list(payload.target_keywords),
+                "keyword_bank": _clean_string_list(payload.keyword_bank),
                 "restricted_keywords": _clean_string_list(payload.restricted_keywords),
                 "default_hashtags": _clean_string_list(payload.default_hashtags),
                 "default_cta": payload.default_cta.strip() if payload.default_cta else None,
@@ -370,6 +375,12 @@ class WebsiteService:
                 "crawl_max_urls_per_run": payload.crawl_max_urls_per_run,
                 "auto_scan": payload.auto_scan,
                 "auto_generate": payload.auto_generate,
+                "auto_generate_require_published_at": payload.auto_generate_require_published_at,
+                "auto_generate_context_mode": (
+                    payload.auto_generate_context_mode
+                    if payload.auto_generate_context_mode in {"metadata_only", "optimized", "full"}
+                    else "optimized"
+                ),
                 "baseline_mode": payload.baseline_mode,
                 "baseline_after_date": (
                     payload.baseline_after_date.replace(tzinfo=None)
@@ -476,6 +487,7 @@ class WebsiteService:
         for list_field in (
             "secondary_languages",
             "target_keywords",
+            "keyword_bank",
             "restricted_keywords",
             "default_hashtags",
         ):
@@ -508,12 +520,21 @@ class WebsiteService:
             "crawl_max_urls_per_run",
             "auto_scan",
             "auto_generate",
+            "auto_generate_require_published_at",
             "baseline_mode",
             "baseline_limit",
             "status",
         ):
             if simple_field in raw and raw[simple_field] is not None:
                 updates[simple_field] = raw[simple_field]
+
+        if "auto_generate_context_mode" in raw and raw["auto_generate_context_mode"] is not None:
+            mode = str(raw["auto_generate_context_mode"]).strip().lower()
+            if mode not in {"metadata_only", "optimized", "full"}:
+                raise ValidationAppError(
+                    "auto_generate_context_mode must be 'metadata_only', 'optimized', or 'full'."
+                )
+            updates["auto_generate_context_mode"] = mode
 
         if "baseline_after_date" in raw:
             val = raw["baseline_after_date"]

@@ -106,3 +106,14 @@ def decrypt_secret(ciphertext: str, encryption_key: str) -> str:
         raise ConfigurationError(
             "Stored secret could not be decrypted with the active APP_ENCRYPTION_KEY."
         ) from exc
+
+
+def mask_secret_hint(plaintext: str | None) -> str | None:
+    """Return a display-safe masked preview without exposing credential characters."""
+    if not plaintext:
+        return None
+    stripped = plaintext.strip()
+    if not stripped:
+        return None
+    suffix = stripped[-4:] if len(stripped) > 6 else ""
+    return f"••••••••{suffix}" if suffix else "••••••••"

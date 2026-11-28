@@ -1,39 +1,83 @@
 <script setup lang="ts">
-import { ArrowLeft, Ban, CheckCircle2, ExternalLink, RefreshCw, Sparkles } from 'lucide-vue-next'
-import type { ContentDetail, ContentRevision } from '~/types/api'
+import { ArrowLeft, Ban, CheckCircle2, ExternalLink, RefreshCw, Save, Sparkles } from 'lucide-vue-next'
+import ContentKeywordEditorFields from '~/components/approval/ContentKeywordEditorFields.vue'
+import type {
+  ApproveContentResult,
+  ContentDetail,
+  ContentRevision,
+  ImageAltSuggestionItem,
+  SocialPostItem,
+} from '~/types/api'
+import {
+  getApprovalStatusMeta,
+  getDraftStatusMeta,
+  isContentEligibleForManualGeneration,
+} from '~/utils/ai'
 import {
   CONTENT_TYPE_OPTIONS,
   extractErrorMessage,
   formatDateTime,
   getContentTypeMeta,
+  isApprovalEligibleContentType,
 } from '~/utils/format'
+import { resolveInitialKeywordSuggestion } from '~/utils/keywordSuggestions'
 
 const route = useRoute()
 const { request } = useApiClient()
+const uiStore = useUiStore()
 const toast = useToast()
 
 const contentId = computed(() => Number(route.params.id))
 
 const detail = ref<ContentDetail | null>(null)
 const revisions = ref<ContentRevision[]>([])
+const socialPosts = ref<SocialPostItem[]>([])
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 const reprocessing = ref(false)
 const savingClass = ref(false)
+const generateModalOpen = ref(false)
 const selectedType = ref('page')
 const activeTab = ref<'markdown' | 'extracted' | 'optimized' | 'structured' | 'html' | 'revisions'>('markdown')
+const savingKeywords = ref(false)
+const kwForm = ref({
+  focus_keyphrase: '',
+  secondary_keywords: [] as string[],
+  anchor_text_variations: [] as string[],
+  image_alt_suggestions: [] as ImageAltSuggestionItem[],
+})
 
 async function loadContent() {
   loading.value = true
   errorMessage.value = null
   try {
-    const [itemData, revData] = await Promise.all([
+    const [itemData, revData, draftData] = await Promise.all([
       request<ContentDetail>(`/api/v1/contents/${contentId.value}`),
       request<ContentRevision[]>(`/api/v1/contents/${contentId.value}/revisions`),
+      request<SocialPostItem[]>(`/api/v1/contents/${contentId.value}/social-posts`),
     ])
     detail.value = itemData
     revisions.value = revData
+    socialPosts.value = draftData
     selectedType.value = itemData.content_type
+    const siteMeta = uiStore.websitesCatalog.find((w) => w.id === itemData.website_id) ?? null
+    const resolved = resolveInitialKeywordSuggestion({
+      content: itemData,
+      keywordMapping: itemData.keyword_mapping,
+      approvalStatus: itemData.approval_status || itemData.content_approval?.status,
+      website: siteMeta,
+    })
+    kwForm.value = {
+      focus_keyphrase: resolved.focusKeyphrase || itemData.focus_keyphrase || '',
+      secondary_keywords:
+        resolved.secondaryKeywords.length > 0
+          ? resolved.secondaryKeywords
+          : [...(itemData.secondary_keywords || [])],
+      anchor_text_variations: resolved.anchorTextVariations,
+      image_alt_suggestions: (itemData.keyword_mapping?.image_alt_suggestions || []).map((a) => ({
+        ...a,
+      })),
+    }
   }
   catch (err) {
     errorMessage.value = extractErrorMessage(err, 'Failed to load content details.')
@@ -128,7 +172,69 @@ async function reprocessNow() {
   }
 }
 
-onMounted(() => {
+async function saveOrApproveKeywords(approveNow: boolean) {
+  if (!detail.value) {
+    return
+  }
+  if (kwForm.value.focus_keyphrase.trim().length < 2) {
+    toast.add({
+      title: 'Focus keyphrase required',
+      description: 'Enter at least 2 characters.',
+      color: 'warning',
+    })
+    return
+  }
+  savingKeywords.value = true
+  try {
+    if (approveNow) {
+      const res = await request<ApproveContentResult>(
+        `/api/v1/content-approvals/${contentId.value}/approve`,
+        {
+          method: 'POST',
+          body: {
+            focus_keyphrase: kwForm.value.focus_keyphrase.trim(),
+            secondary_keywords: kwForm.value.secondary_keywords,
+            anchor_text_variations: kwForm.value.anchor_text_variations,
+            image_alt_suggestions: kwForm.value.image_alt_suggestions,
+            content_type: selectedType.value,
+          },
+        },
+      )
+      toast.add({
+        title: 'Content & keywords approved',
+        description: res.auto_generation_note || `Focus: ${kwForm.value.focus_keyphrase.trim()}`,
+        color: 'success',
+      })
+    }
+    else {
+      await request(`/api/v1/content-approvals/${contentId.value}/keywords`, {
+        method: 'PATCH',
+        body: {
+          focus_keyphrase: kwForm.value.focus_keyphrase.trim(),
+          secondary_keywords: kwForm.value.secondary_keywords,
+          anchor_text_variations: kwForm.value.anchor_text_variations,
+          image_alt_suggestions: kwForm.value.image_alt_suggestions,
+          content_type: selectedType.value,
+        },
+      })
+      toast.add({ title: 'Keyword mapping saved', color: 'success' })
+    }
+    await loadContent()
+  }
+  catch (err) {
+    toast.add({
+      title: 'Keyword update failed',
+      description: extractErrorMessage(err, 'Could not save keywords.'),
+      color: 'error',
+    })
+  }
+  finally {
+    savingKeywords.value = false
+  }
+}
+
+onMounted(async () => {
+  await uiStore.refreshGlobalSelectors().catch(() => {})
   void loadContent()
 })
 </script>
@@ -193,7 +299,18 @@ onMounted(() => {
         </div>
 
         <UButton
+          v-if="isContentEligibleForManualGeneration(detail)"
           color="primary"
+          size="xs"
+          @click="generateModalOpen = true"
+        >
+          <Sparkles class="mr-1.5 h-3.5 w-3.5" />
+          Generate Social Drafts
+        </UButton>
+
+        <UButton
+          color="neutral"
+          variant="outline"
           size="xs"
           :loading="reprocessing"
           @click="reprocessNow"
@@ -318,13 +435,25 @@ onMounted(() => {
         </div>
 
         <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
-          <p class="font-semibold text-slate-900 dark:text-slate-100">Keywords & Metadata</p>
-          <p class="mt-2 line-clamp-2 text-slate-600 dark:text-slate-300">
+          <div class="flex items-center justify-between gap-2">
+            <p class="font-semibold text-slate-900 dark:text-slate-100">SEO Approval & Focus</p>
+            <UBadge
+              :color="getApprovalStatusMeta(detail.approval_status).color"
+              variant="subtle"
+              size="xs"
+            >
+              {{ getApprovalStatusMeta(detail.approval_status).label }}
+            </UBadge>
+          </div>
+          <p class="mt-2 font-medium text-teal-700 dark:text-teal-300">
+            {{ detail.keyword_mapping?.focus_keyphrase || detail.focus_keyphrase || 'No focus keyphrase assigned' }}
+          </p>
+          <p class="mt-1 line-clamp-2 text-slate-600 dark:text-slate-300">
             {{ detail.meta_description || 'No meta description found.' }}
           </p>
-          <div class="mt-3 flex flex-wrap gap-1">
+          <div class="mt-2 flex flex-wrap gap-1">
             <UBadge
-              v-for="kw in detail.keywords.slice(0, 8)"
+              v-for="kw in (detail.keyword_mapping?.secondary_keywords || detail.keywords).slice(0, 6)"
               :key="kw"
               color="neutral"
               variant="subtle"
@@ -332,15 +461,67 @@ onMounted(() => {
             >
               {{ kw }}
             </UBadge>
-            <span
-              v-if="detail.keywords.length === 0"
-              class="text-slate-400"
-            >
-              No keywords extracted yet
-            </span>
           </div>
         </div>
       </div>
+
+      <!-- Inline Keyword Mapping & Approval Editor -->
+      <section
+        v-if="!detail.is_excluded && isApprovalEligibleContentType(detail.content_type)"
+        class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900"
+      >
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2 dark:border-slate-800">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              SEO Keyword Mapping & Content Approval
+            </h2>
+            <p class="text-[11px] text-slate-500">
+              Edit focus keyphrase, secondary keywords, link anchors, and image alt descriptions inline, or open in the approval queue.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <UButton
+              to="/content-approval"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+            >
+              Open Approval Queue
+            </UButton>
+            <UButton
+              color="neutral"
+              variant="outline"
+              size="xs"
+              :loading="savingKeywords"
+              @click="saveOrApproveKeywords(false)"
+            >
+              <Save class="mr-1 h-3.5 w-3.5" />
+              Save Keywords
+            </UButton>
+            <UButton
+              color="primary"
+              size="xs"
+              :disabled="detail.extraction_status !== 'extracted'"
+              :loading="savingKeywords"
+              @click="saveOrApproveKeywords(true)"
+            >
+              <Sparkles class="mr-1 h-3.5 w-3.5" />
+              Approve & Save Keywords
+            </UButton>
+          </div>
+        </div>
+
+        <ContentKeywordEditorFields
+          v-model:focus-keyphrase="kwForm.focus_keyphrase"
+          v-model:secondary-keywords="kwForm.secondary_keywords"
+          v-model:anchor-text-variations="kwForm.anchor_text_variations"
+          v-model:image-alt-suggestions="kwForm.image_alt_suggestions"
+          v-model:content-type="selectedType"
+          :show-content-type="false"
+          :cannibalization-warnings="detail.keyword_mapping?.cannibalization_warnings || []"
+          :disabled="savingKeywords"
+        />
+      </section>
 
       <!-- Content Viewer Tabs -->
       <div class="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
@@ -424,6 +605,68 @@ onMounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- Associated Generated Social Drafts -->
+      <section class="rounded-lg border border-slate-200 bg-white p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3 dark:border-slate-800">
+          <div>
+            <h2 class="text-sm font-semibold">
+              Generated Social Drafts ({{ socialPosts.length }})
+            </h2>
+            <p class="text-[11px] text-slate-500">
+              Automatically generated per configured social profile on {{ detail.website_name }}.
+            </p>
+          </div>
+          <UButton
+            :to="`/social-media?website_id=${detail.website_id}&website_content_id=${detail.id}`"
+            color="neutral"
+            variant="outline"
+            size="xs"
+          >
+            Manage in Social Media
+          </UButton>
+        </div>
+
+        <p
+          v-if="socialPosts.length === 0"
+          class="pt-3 text-slate-500"
+        >
+          No social drafts generated for this content yet.
+        </p>
+
+        <div
+          v-else
+          class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2"
+        >
+          <div
+            v-for="draft in socialPosts"
+            :key="draft.id"
+            class="rounded-md border border-slate-200 p-3 dark:border-slate-700"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5">
+                <span class="font-semibold">{{ draft.social_profile_name }}</span>
+                <UBadge color="neutral" variant="outline" size="xs">
+                  {{ draft.platform_display_name || draft.platform_key }}
+                </UBadge>
+              </div>
+              <UBadge :color="getDraftStatusMeta(draft.status).color" variant="subtle" size="xs">
+                {{ getDraftStatusMeta(draft.status).label }}
+              </UBadge>
+            </div>
+            <p class="mt-2 line-clamp-3 whitespace-pre-wrap text-slate-600 dark:text-slate-300">
+              {{ draft.assembled_content || draft.error_message }}
+            </p>
+          </div>
+        </div>
+      </section>
     </template>
+
+    <GenerateSocialModal
+      :open="generateModalOpen"
+      :content="detail"
+      @update:open="generateModalOpen = $event"
+      @generated="loadContent()"
+    />
   </div>
 </template>

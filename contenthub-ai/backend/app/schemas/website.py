@@ -67,6 +67,7 @@ class WebsiteCreateRequest(BaseModel):
     secondary_languages: list[str] = Field(default_factory=list)
     tone: str | None = Field(default=None, max_length=120)
     target_keywords: list[str] = Field(default_factory=list)
+    keyword_bank: list[str] = Field(default_factory=list)
     restricted_keywords: list[str] = Field(default_factory=list)
     default_hashtags: list[str] = Field(default_factory=list)
     default_cta: str | None = Field(default=None, max_length=255)
@@ -88,6 +89,8 @@ class WebsiteCreateRequest(BaseModel):
     crawl_max_urls_per_run: int = Field(default=1000, ge=1, le=20000)
     auto_scan: bool = True
     auto_generate: bool = False
+    auto_generate_require_published_at: bool = True
+    auto_generate_context_mode: str = Field(default="optimized", max_length=32)
     baseline_mode: str = Field(default="import_existing", max_length=32)
     baseline_after_date: datetime | None = None
     baseline_limit: int | None = Field(default=None, ge=1, le=5000)
@@ -108,6 +111,7 @@ class WebsiteUpdateRequest(BaseModel):
     secondary_languages: list[str] | None = None
     tone: str | None = Field(default=None, max_length=120)
     target_keywords: list[str] | None = None
+    keyword_bank: list[str] | None = None
     restricted_keywords: list[str] | None = None
     default_hashtags: list[str] | None = None
     default_cta: str | None = Field(default=None, max_length=255)
@@ -127,6 +131,8 @@ class WebsiteUpdateRequest(BaseModel):
     crawl_max_urls_per_run: int | None = Field(default=None, ge=1, le=20000)
     auto_scan: bool | None = None
     auto_generate: bool | None = None
+    auto_generate_require_published_at: bool | None = None
+    auto_generate_context_mode: str | None = Field(default=None, max_length=32)
     baseline_mode: str | None = Field(default=None, max_length=32)
     baseline_after_date: datetime | None = None
     baseline_limit: int | None = Field(default=None, ge=1, le=5000)
@@ -138,6 +144,7 @@ class ContentBreakdownCounts(BaseModel):
     total_extracted: int = 0
     homepage: int = 0
     page: int = 0
+    game_page: int = 0
     blog_index: int = 0
     blog_post: int = 0
     category: int = 0
@@ -165,6 +172,7 @@ class WebsiteResponse(BaseModel):
     secondary_languages: list[str] = Field(default_factory=list)
     tone: str | None = None
     target_keywords: list[str] = Field(default_factory=list)
+    keyword_bank: list[str] = Field(default_factory=list)
     restricted_keywords: list[str] = Field(default_factory=list)
     default_hashtags: list[str] = Field(default_factory=list)
     default_cta: str | None = None
@@ -185,6 +193,8 @@ class WebsiteResponse(BaseModel):
     crawl_max_urls_per_run: int = 1000
     auto_scan: bool
     auto_generate: bool
+    auto_generate_require_published_at: bool = True
+    auto_generate_context_mode: str = "optimized"
     initial_scan_completed: bool
     baseline_mode: str
     baseline_after_date: datetime | None = None

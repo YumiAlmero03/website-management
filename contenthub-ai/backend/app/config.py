@@ -98,6 +98,25 @@ class Settings(BaseSettings):
     media_max_dimension_px: int = Field(default=4096, ge=256, le=16384)
     media_download_timeout_seconds: float = Field(default=15.0, ge=2.0, le=60.0)
 
+    # Phase 3 — Gemini AI Engine, Caching, Prompts & Background Jobs
+    gemini_api_key: str = ""
+    ai_default_model: str = "gemini-3.5-flash-lite"
+    ai_default_temperature: float = Field(default=0.4, ge=0.0, le=2.0)
+    ai_default_max_output_tokens: int = Field(default=1500, ge=64, le=8192)
+    ai_request_timeout_seconds: int = Field(default=45, ge=5, le=300)
+    ai_max_retry_attempts: int = Field(default=2, ge=0, le=5)
+    ai_cache_ttl_days: int = Field(default=30, ge=1, le=365)
+    ai_job_stale_timeout_minutes: int = Field(default=15, ge=5, le=180)
+    ai_job_max_attempts: int = Field(default=3, ge=1, le=10)
+    localai_enabled: bool = False
+    localai_base_url: str = "http://127.0.0.1:8080/v1"
+    localai_api_key: str = ""
+    localai_model: str = ""
+    localai_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    localai_max_output_tokens: int = Field(default=512, ge=64, le=8192)
+    localai_timeout_seconds: int = Field(default=60, ge=5, le=300)
+    localai_max_concurrency: int = Field(default=1, ge=1, le=10)
+
     @field_validator("app_timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:

@@ -2,14 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { SIDEBAR_MODULES, filterModulesByQuery, findModuleByRoute } from '~/utils/navigation'
 
 describe('sidebar navigation catalog', () => {
-  it('defines the website-centric 14 administrative modules in order with unique routes', () => {
-    expect(SIDEBAR_MODULES).toHaveLength(14)
+  it('defines the website-centric 15 administrative modules in order with unique routes', () => {
+    expect(SIDEBAR_MODULES).toHaveLength(15)
 
     const labels = SIDEBAR_MODULES.map((item) => item.label)
     expect(labels).toEqual([
       'Dashboard',
       'Websites',
       'Content Library',
+      'Content Approval',
       'Social Media',
       'Editorial Planner',
       'Articles',
@@ -25,13 +26,14 @@ describe('sidebar navigation catalog', () => {
 
     expect(labels).not.toContain('Brands')
     const routes = new Set(SIDEBAR_MODULES.map((item) => item.to))
-    expect(routes.size).toBe(14)
+    expect(routes.size).toBe(15)
   })
 
   it('resolves routes and filters modules by search query', () => {
     expect(findModuleByRoute('/')?.id).toBe('dashboard')
     expect(findModuleByRoute('/websites')?.implemented).toBe(true)
     expect(findModuleByRoute('/content-library')?.implemented).toBe(true)
+    expect(findModuleByRoute('/content-approval')?.implemented).toBe(true)
     expect(findModuleByRoute('/settings')?.phase).toBe(1)
 
     const matches = filterModulesByQuery('gemini')

@@ -50,13 +50,21 @@ ContentHub AI is a **single-administrator private application** deployed on a sh
 - **Safe Media Validation (`media.py`):** Validates MIME types, file size caps (`MEDIA_MAX_FILE_BYTES`), Pillow image integrity and pixel dimension limits (`MEDIA_MAX_DIMENSION_PX`, decompression bomb guard), path traversal containment inside `STORAGE_ROOT/images`, and SHA-256 deduplication.
 - **Ethical Crawling:** Respects `robots.txt` (`SCANNER_RESPECT_ROBOTS_TXT=true`), enforces crawl delays and response size caps, keeps Playwright disabled by default, and never attempts CAPTCHA or Cloudflare bypasses.
 
-## 4. Planned Security Controls (Phases 3–7)
+## 4. Phase 3 Implemented Security Controls (Gemini AI Engine, Prompts & Social Profiles)
 
-- **Prompt Isolation (Phase 3):** Untrusted article contexts are strictly delimited from system instructions in Google Gemini API prompts (sole AI generation provider).
+- **Encrypted Gemini Keys & Social Credentials:** `ai_providers.encrypted_api_key` and all six per-profile secret columns on `social_profiles` (`encrypted_api_key`, `encrypted_api_secret`, `encrypted_access_token`, `encrypted_refresh_token`, `encrypted_app_id`, `encrypted_app_secret`) are encrypted at rest via Fernet (`APP_ENCRYPTION_KEY`), returned strictly masked with `Cache-Control: no-store`, and scrubbed from audit logs and provider test errors (`redact_text`).
+- **Restricted Jinja2 Prompt Sandbox (`prompt_builder.py`):** Uses `jinja2.sandbox.SandboxedEnvironment` with `globals.clear()`, restricted string/length filters only, strict undefined handling, explicit double-underscore (`__`) blocking, and strict `ALLOWED_PROMPT_VARIABLES` whitelist enforcement (`422 PROMPT_SECURITY_ERROR`).
+- **Prompt Injection Boundary Protection (`context_builder.py`):** Scraped page titles, meta descriptions, and extracted Markdown pass through `sanitize_untrusted_text()` to neutralize null bytes and forged `<source_content>` / `<system_instructions>` XML delimiter tags before rendering prompts.
+- **Free-First Quota & Fallback Lock (`quota_manager.py`):** Enforces local daily request, daily token, and RPM caps prior to Gemini invocations, rejects `allow_paid_fallback=true` (`422`), never rotates API keys silently, and defers over-quota background jobs safely to MySQL.
+- **Strict Website Isolation (`cache.py`, `response_validator.py`):** Cache keys hash `website_id` and validate exact ownership on read; batch output validation rejects any structured Gemini JSON containing unknown or foreign `social_profile_id` values (`AI_RESPONSE_VALIDATION_ERROR`) before writing response cache entries.
+- **Phase 3 Publishing Boundary:** `auto_publish_enabled=true` is rejected (`422`) and external live posting routes remain unimplemented until Phase 4.
+
+## 5. Planned Security Controls (Phases 4–7)
+
 - **Publishing Safeguards (Phases 4–5):** Semi-automatic approval is default; official APIs only; never bypass platform policies with browser automation or session-cookie injection.
 - **QA, Security Hardening & Deployment Verification (Phase 7):** Expanded SSRF/security regression tests, least-privilege aaPanel deployment hardening, and backup/restore verification drills.
 
-## 5. Private Deployment & OAuth Callback Considerations
+## 6. Private Deployment & OAuth Callback Considerations
 
 - **Network Exposure:** Bind Nuxt (`127.0.0.1:3100`) and FastAPI (`127.0.0.1:8100`) to loopback only. Place ContentHub AI behind a private VPN (Tailscale/WireGuard), SSH tunnel, IP-allowlisted Nginx reverse proxy, or Cloudflare Access / mutual TLS.
 - **OAuth Callback URLs (Phases 4–5):** Integrations such as Facebook Pages Graph API, Google Search Console, Blogger, LinkedIn, and Google Business Profile require an HTTPS callback URL reachable by the administrator's browser (and, for some verification checks, a valid TLS hostname). When running behind a private VPN/allowlist:

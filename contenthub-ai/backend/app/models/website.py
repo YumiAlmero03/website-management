@@ -60,6 +60,7 @@ class Website(TimestampMixin, Base):
     secondary_languages: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     tone: Mapped[str | None] = mapped_column(String(120), nullable=True)
     target_keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    keyword_bank: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     restricted_keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     default_hashtags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     default_cta: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -122,6 +123,18 @@ class Website(TimestampMixin, Base):
         nullable=False,
         default=False,
         server_default=text("0"),
+    )
+    auto_generate_require_published_at: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("1"),
+    )
+    auto_generate_context_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="optimized",
+        server_default="optimized",
     )
     initial_scan_completed: Mapped[bool] = mapped_column(
         Boolean,

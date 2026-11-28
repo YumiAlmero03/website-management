@@ -31,6 +31,7 @@ class Phase2Metrics(BaseModel):
     total_extracted: int
     homepage_count: int
     page_count: int
+    game_page_count: int = 0
     blog_post_count: int
     blog_index_count: int
     other_count: int
@@ -42,6 +43,8 @@ class Phase2Metrics(BaseModel):
     failed_scans: int
     incomplete_scans: int
     websites_due_for_scan: int
+    pending_content_approvals: int = 0
+    approved_keywords_count: int = 0
 
 
 class DashboardSummaryResponse(BaseModel):

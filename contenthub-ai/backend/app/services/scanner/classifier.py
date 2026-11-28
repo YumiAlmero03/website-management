@@ -12,6 +12,7 @@ from app.services.scanner.url_normalizer import is_same_site, normalize_url
 CONTENT_TYPES: tuple[str, ...] = (
     "homepage",
     "page",
+    "game_page",
     "blog_index",
     "blog_post",
     "category",
@@ -63,6 +64,11 @@ BLOG_POST_PREFIXES: tuple[str, ...] = (
     "/posts/",
     "/journal/",
     "/insights/",
+)
+GAME_PAGE_PREFIXES: tuple[str, ...] = (
+    "/game/",
+    "/games/",
+    "/slots/",
 )
 BLOG_INDEX_PAGE_RE = re.compile(
     r"^/(?:blog|blogs|news|articles|posts|journal|insights)/page/\d+/?$"
@@ -272,6 +278,15 @@ def classify_url(
     if DATE_POST_RE.match(lowered):
         return ClassificationDecision("blog_post", "default_rule", is_excluded=False)
 
+    is_slot_listing = (
+        lowered.rstrip("/") in {"/slots", "/slot", "/games", "/game"}
+        or any(lowered.rstrip("/").endswith(suffix) for suffix in ("/slots/all", "/games/all", "/games/list"))
+    )
+    if not is_slot_listing and any(
+        lowered.startswith(prefix) and len(lowered) > len(prefix) for prefix in GAME_PAGE_PREFIXES
+    ):
+        return ClassificationDecision("game_page", "default_rule", is_excluded=False)
+
     # Use JSON-LD / OG metadata when URL structure does not indicate blog vs regular page.
     norm_jsonld = {str(t).strip().lower() for t in (jsonld_types or []) if t}
     if norm_jsonld & ARTICLE_JSONLD_TYPES or (og_type or "").strip().lower() == "article":
@@ -295,6 +310,7 @@ def serialize_classification_summary(counts: dict[str, Any]) -> dict[str, int]:
     return {
         "homepage": int(counts.get("homepage", 0)),
         "page": int(counts.get("page", 0)),
+        "game_page": int(counts.get("game_page", 0)),
         "blog_index": int(counts.get("blog_index", 0)),
         "blog_post": int(counts.get("blog_post", 0)),
         "category": int(counts.get("category", 0)),

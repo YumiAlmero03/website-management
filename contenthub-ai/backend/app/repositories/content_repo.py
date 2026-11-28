@@ -63,7 +63,9 @@ class ContentRepositoryProtocol(Protocol):
         self, website_id: int, *, limit: int = 100
     ) -> list[WebsiteContent]: ...
 
-    def list_for_website(self, website_id: int) -> list[WebsiteContent]: ...
+    def list_for_website(
+        self, website_id: int, *, limit: int | None = None
+    ) -> list[WebsiteContent]: ...
 
     def count_by_website(self, website_id: int) -> int: ...
 
@@ -229,6 +231,7 @@ class SQLAlchemyContentRepository:
             "total_extracted": sum(1 for r in active if r.extraction_status == "extracted"),
             "homepage_count": sum(1 for r in active if r.content_type == "homepage"),
             "page_count": sum(1 for r in active if r.content_type == "page"),
+            "game_page_count": sum(1 for r in active if r.content_type == "game_page"),
             "blog_post_count": sum(1 for r in active if r.content_type == "blog_post"),
             "blog_index_count": sum(1 for r in active if r.content_type == "blog_index"),
             "other_count": sum(
@@ -300,12 +303,16 @@ class SQLAlchemyContentRepository:
         )
         return list(self.db.execute(stmt).scalars().all())
 
-    def list_for_website(self, website_id: int) -> list[WebsiteContent]:
+    def list_for_website(
+        self, website_id: int, *, limit: int | None = None
+    ) -> list[WebsiteContent]:
         stmt = (
             select(WebsiteContent)
             .where(WebsiteContent.website_id == website_id)
             .order_by(WebsiteContent.id.asc())
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
         return list(self.db.execute(stmt).scalars().all())
 
     def count_by_website(self, website_id: int) -> int:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import math
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from app.config import Settings
 from app.core.exceptions import NotFoundError, ValidationAppError
@@ -10,9 +12,13 @@ from app.models.website_content import WebsiteContent
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
 from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
 from app.repositories.content_repo import ContentRepositoryProtocol
+from app.repositories.keyword_approval_repo import KeywordApprovalRepositoryProtocol
 from app.repositories.media_repo import MediaRepositoryProtocol
 from app.repositories.website_repo import WebsiteRepositoryProtocol
 from app.repositories.website_source_repo import WebsiteSourceConfigRepositoryProtocol
+
+if TYPE_CHECKING:
+    from app.services.content_approval_service import ContentApprovalService
 from app.schemas.common import PaginationMeta
 from app.schemas.content import (
     ContentDetailResponse,
@@ -22,6 +28,7 @@ from app.schemas.content import (
     ContentStatsResponse,
     ContentUpdateRequest,
 )
+from app.schemas.keyword_approval import APPROVAL_ELIGIBLE_CONTENT_TYPES
 from app.services.content.duplicate import find_near_duplicate
 from app.services.content.extractor import ContentExtractionEngine
 from app.services.content.media import MediaAssetProcessor, MediaValidationError
@@ -46,6 +53,7 @@ TAB_TO_FILTERS: dict[str, dict[str, object]] = {
     "all": {"include_excluded": False},
     "homepage": {"content_type": "homepage", "include_excluded": False},
     "pages": {"content_type": "page", "include_excluded": False},
+    "game_pages": {"content_type": "game_page", "include_excluded": False},
     "blog_posts": {"content_type": "blog_post", "include_excluded": False},
     "blog_indexes": {"content_type": "blog_index", "include_excluded": False},
     "other": {"content_types": ["category", "tag", "archive", "custom"], "include_excluded": False},
@@ -68,6 +76,8 @@ class ContentService:
         media_repo: MediaRepositoryProtocol,
         activity_repo: ActivityLogRepositoryProtocol,
         fetcher: SafeHttpFetcher,
+        keyword_approval_repo: KeywordApprovalRepositoryProtocol | None = None,
+        approval_service: ContentApprovalService | None = None,
     ) -> None:
         self.settings = settings
         self.content_repo = content_repo
@@ -77,6 +87,8 @@ class ContentService:
         self.media_repo = media_repo
         self.activity_repo = activity_repo
         self.fetcher = fetcher
+        self.keyword_approval_repo = keyword_approval_repo
+        self.approval_service = approval_service
         self.extractor = ContentExtractionEngine(settings=settings)
         self.media_processor = MediaAssetProcessor(
             settings=settings,
@@ -104,6 +116,36 @@ class ContentService:
         featured_url = None
         if media is not None:
             featured_url = f"/api/v1/media/{media.id}/file" if media.file_path else media.source_url
+
+        approval = (
+            self.keyword_approval_repo.get_approval_by_content_id(row.id)
+            if self.keyword_approval_repo is not None
+            else None
+        )
+        kw = (
+            self.keyword_approval_repo.get_keyword_by_content_id(row.id)
+            if self.keyword_approval_repo is not None
+            else None
+        )
+        cannibal_count = 0
+        if (
+            self.approval_service is not None
+            and kw is not None
+            and kw.focus_keyphrase
+            and not row.is_excluded
+        ):
+            from app.services.content.keyword_suggester import detect_cannibalization_warnings
+
+            siblings = self.approval_service.reuse_service._load_website_keyword_pairs(
+                row.website_id
+            )
+            cannibal_count = len(
+                detect_cannibalization_warnings(
+                    content_id=row.id,
+                    focus_keyphrase=kw.focus_keyphrase,
+                    sibling_records=siblings,
+                )
+            )
         return ContentListItemResponse(
             id=row.id,
             website_id=row.website_id,
@@ -140,6 +182,11 @@ class ContentService:
             first_discovered_at=ensure_utc(row.first_discovered_at) or now,
             last_discovered_at=ensure_utc(row.last_discovered_at) or now,
             last_checked_at=ensure_utc(row.last_checked_at) or now,
+            approval_status=approval.status if approval else None,
+            keyword_approval_status=kw.approval_status if kw else None,
+            focus_keyphrase=kw.focus_keyphrase if kw else None,
+            secondary_keywords=list(kw.secondary_keywords_json or []) if kw else [],
+            cannibalization_count=cannibal_count,
         )
 
     def _to_detail(self, row: WebsiteContent) -> ContentDetailResponse:
@@ -147,6 +194,17 @@ class ContentService:
         base = self._to_list_item(row)
         media = self.media_repo.get_by_id(row.featured_media_id) if row.featured_media_id else None
         revisions = self.content_repo.list_revisions(row.id)
+        kw_mapping = None
+        app_item = None
+        if (
+            self.approval_service is not None
+            and not row.is_excluded
+            and row.content_type in APPROVAL_ELIGIBLE_CONTENT_TYPES
+        ):
+            with contextlib.suppress(Exception):
+                detail = self.approval_service.get_approval_detail(row.id)
+                kw_mapping = detail.keyword_mapping
+                app_item = detail
         return ContentDetailResponse(
             **base.model_dump(),
             url_hash=row.url_hash,
@@ -158,6 +216,8 @@ class ContentService:
             structured_data_json=row.structured_data_json,
             featured_media=MediaService.to_response(media) if media is not None else None,
             revision_count=len(revisions),
+            keyword_mapping=kw_mapping,
+            content_approval=app_item,
             created_at=ensure_utc(row.created_at) or now,
             updated_at=ensure_utc(row.updated_at) or now,
         )
@@ -311,6 +371,18 @@ class ContentService:
 
         updated = self.content_repo.update(content_id, updates)
         assert updated is not None
+        if self.approval_service is not None and not updated.is_excluded:
+            site = self.website_repo.get_by_id(updated.website_id)
+            if site is not None:
+                with contextlib.suppress(Exception):
+                    if updated.extraction_status == "extracted":
+                        self.approval_service.sync_extracted_content(
+                            content=updated, website=site, changed=False
+                        )
+                    else:
+                        self.approval_service.sync_discovered_content(
+                            content=updated, website=site
+                        )
         self.activity_repo.create(
             user_id=user_id,
             actor_type="admin",
@@ -476,6 +548,17 @@ class ContentService:
             },
         )
         assert updated is not None
+        if self.approval_service is not None:
+            with contextlib.suppress(Exception):
+                self.approval_service.sync_extracted_content(
+                    content=updated,
+                    website=site,
+                    extracted_headings=extracted.headings,
+                    extracted_images=extracted.images,
+                    featured_image_url=extracted.featured_image_url,
+                    featured_image_alt=extracted.featured_image_alt,
+                    changed=changed,
+                )
         self.activity_repo.create(
             user_id=user_id,
             actor_type="admin",

@@ -61,9 +61,21 @@ export function humanizeCategory(category: string): string {
     .join(' ')
 }
 
+export const APPROVAL_ELIGIBLE_CONTENT_TYPES = [
+  'homepage',
+  'page',
+  'game_page',
+  'blog_post',
+] as const
+
+export function isApprovalEligibleContentType(contentType: string): boolean {
+  return (APPROVAL_ELIGIBLE_CONTENT_TYPES as readonly string[]).includes(contentType)
+}
+
 export const CONTENT_TYPE_OPTIONS = [
   { label: 'Homepage', value: 'homepage' },
   { label: 'Page', value: 'page' },
+  { label: 'Game Page', value: 'game_page' },
   { label: 'Blog Index', value: 'blog_index' },
   { label: 'Blog Post', value: 'blog_post' },
   { label: 'Category', value: 'category' },
@@ -97,6 +109,7 @@ type UiBadgeColor = 'primary' | 'secondary' | 'success' | 'info' | 'warning' | '
 const CONTENT_TYPE_META: Record<string, { label: string; color: UiBadgeColor }> = {
   homepage: { label: 'Homepage', color: 'info' },
   page: { label: 'Page', color: 'secondary' },
+  game_page: { label: 'Game Page', color: 'success' },
   blog_index: { label: 'Blog Index', color: 'warning' },
   blog_post: { label: 'Blog Post', color: 'primary' },
   category: { label: 'Category', color: 'neutral' },

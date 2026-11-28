@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import socket
 import time
@@ -224,14 +225,38 @@ class SafeHttpFetcher:
         self.transport = transport
         # Pin IP on live network requests to block DNS rebinding; skip pinning on mock transports.
         self.pin_resolved_ip = (transport is None) if pin_resolved_ip is None else pin_resolved_ip
+        self._clients: dict[tuple[str, float], httpx.Client] = {}
 
     def _create_client(self, timeout_seconds: float) -> httpx.Client:
         return httpx.Client(
             transport=self.transport,
             follow_redirects=False,
             timeout=httpx.Timeout(timeout_seconds),
+            limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
             headers={"User-Agent": self.settings.scanner_user_agent},
         )
+
+    def _get_pooled_client(self, hostname: str, timeout_seconds: float) -> httpx.Client:
+        key = (hostname, timeout_seconds)
+        client = self._clients.get(key)
+        if client is None or client.is_closed:
+            client = self._create_client(timeout_seconds)
+            self._clients[key] = client
+        return client
+
+    def _drop_pooled_clients(self, hostname: str) -> None:
+        stale_keys = [k for k in self._clients if k[0] == hostname]
+        for key in stale_keys:
+            client = self._clients.pop(key)
+            with contextlib.suppress(Exception):
+                client.close()
+
+    def close(self) -> None:
+        """Close any pooled live HTTP clients held by this fetcher."""
+        for client in list(self._clients.values()):
+            with contextlib.suppress(Exception):
+                client.close()
+        self._clients.clear()
 
     def fetch(
         self,
@@ -283,95 +308,154 @@ class SafeHttpFetcher:
         current_url = url
         redirects_remaining = self.settings.scanner_max_redirects
 
-        with self._create_client(timeout_seconds) as client:
-            while True:
-                target = validate_outbound_url(
-                    current_url,
-                    trusted_internal_hosts=self.settings.trusted_internal_host_set,
-                    resolver=self.resolver,
-                )
-
-                headers: dict[str, str] = {"User-Agent": self.settings.scanner_user_agent}
-                if accept:
-                    headers["Accept"] = accept
-                if current_url == url:
-                    if etag:
-                        headers["If-None-Match"] = etag
-                    if last_modified:
-                        headers["If-Modified-Since"] = last_modified
-
-                request_url = current_url
-                extensions: dict[str, object] = {}
-                if self.pin_resolved_ip:
-                    request_url, host_headers, extensions = _build_pinned_url(current_url, target)
-                    headers.update(host_headers)
-
-                with client.stream(
-                    "GET",
-                    request_url,
-                    headers=headers,
-                    extensions=extensions or None,
-                ) as response:
-                    norm_headers = {k.lower(): v for k, v in response.headers.items()}
-
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        location = norm_headers.get("location")
-                        if not location:
-                            raise ScannerError(
-                                f"Redirect without Location header from {current_url}."
-                            )
+        if self.transport is not None:
+            with self._create_client(timeout_seconds) as client:
+                while True:
+                    outcome = self._fetch_hop(
+                        client=client,
+                        original_url=url,
+                        current_url=current_url,
+                        etag=etag,
+                        last_modified=last_modified,
+                        accept=accept,
+                        max_bytes=max_bytes,
+                    )
+                    if isinstance(outcome, str):
                         if redirects_remaining <= 0:
                             raise ScannerError(
                                 "Exceeded maximum redirects "
                                 f"({self.settings.scanner_max_redirects})."
                             )
                         redirects_remaining -= 1
-                        current_url = urljoin(current_url, location.strip())
+                        current_url = outcome
                         continue
+                    return outcome
 
-                    if response.status_code == 304:
-                        return FetchedResponse(
-                            url=url,
-                            final_url=current_url,
-                            status_code=304,
-                            headers=norm_headers,
-                            content=b"",
-                            not_modified=True,
-                            etag=norm_headers.get("etag") or etag,
-                            last_modified=norm_headers.get("last-modified") or last_modified,
-                        )
+        while True:
+            target = validate_outbound_url(
+                current_url,
+                trusted_internal_hosts=self.settings.trusted_internal_host_set,
+                resolver=self.resolver,
+            )
+            client = self._get_pooled_client(target.hostname, timeout_seconds)
+            try:
+                outcome = self._fetch_hop(
+                    client=client,
+                    original_url=url,
+                    current_url=current_url,
+                    etag=etag,
+                    last_modified=last_modified,
+                    accept=accept,
+                    max_bytes=max_bytes,
+                    validated_target=target,
+                )
+            except (httpx.TimeoutException, httpx.TransportError):
+                self._drop_pooled_clients(target.hostname)
+                raise
 
-                    content_length_raw = norm_headers.get("content-length")
-                    if (
-                        content_length_raw
-                        and content_length_raw.isdigit()
-                        and int(content_length_raw) > max_bytes
-                    ):
-                        raise ResponseTooLargeError(
-                            f"Response Content-Length ({content_length_raw} bytes) "
-                            f"exceeds limit ({max_bytes})."
-                        )
-
-                    chunks: list[bytes] = []
-                    total_bytes = 0
-                    for chunk in response.iter_bytes(chunk_size=16384):
-                        total_bytes += len(chunk)
-                        if total_bytes > max_bytes:
-                            raise ResponseTooLargeError(
-                                f"Response body exceeded maximum allowed size ({max_bytes} bytes)."
-                            )
-                        chunks.append(chunk)
-
-                    if response.status_code >= 500:
-                        raise ScannerError(f"Upstream server returned HTTP {response.status_code}.")
-
-                    return FetchedResponse(
-                        url=url,
-                        final_url=current_url,
-                        status_code=response.status_code,
-                        headers=norm_headers,
-                        content=b"".join(chunks),
-                        not_modified=False,
-                        etag=norm_headers.get("etag"),
-                        last_modified=norm_headers.get("last-modified"),
+            if isinstance(outcome, str):
+                if redirects_remaining <= 0:
+                    raise ScannerError(
+                        "Exceeded maximum redirects "
+                        f"({self.settings.scanner_max_redirects})."
                     )
+                redirects_remaining -= 1
+                current_url = outcome
+                continue
+            return outcome
+
+    def _fetch_hop(
+        self,
+        *,
+        client: httpx.Client,
+        original_url: str,
+        current_url: str,
+        etag: str | None,
+        last_modified: str | None,
+        accept: str | None,
+        max_bytes: int,
+        validated_target: ValidatedTarget | None = None,
+    ) -> FetchedResponse | str:
+        target = validated_target or validate_outbound_url(
+            current_url,
+            trusted_internal_hosts=self.settings.trusted_internal_host_set,
+            resolver=self.resolver,
+        )
+
+        headers: dict[str, str] = {"User-Agent": self.settings.scanner_user_agent}
+        if accept:
+            headers["Accept"] = accept
+        if current_url == original_url:
+            if etag:
+                headers["If-None-Match"] = etag
+            if last_modified:
+                headers["If-Modified-Since"] = last_modified
+
+        request_url = current_url
+        extensions: dict[str, object] = {}
+        if self.pin_resolved_ip:
+            request_url, host_headers, extensions = _build_pinned_url(current_url, target)
+            headers.update(host_headers)
+
+        with client.stream(
+            "GET",
+            request_url,
+            headers=headers,
+            extensions=extensions or None,
+        ) as response:
+            norm_headers = {k.lower(): v for k, v in response.headers.items()}
+
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = norm_headers.get("location")
+                if not location:
+                    raise ScannerError(
+                        f"Redirect without Location header from {current_url}."
+                    )
+                return urljoin(current_url, location.strip())
+
+            if response.status_code == 304:
+                return FetchedResponse(
+                    url=original_url,
+                    final_url=current_url,
+                    status_code=304,
+                    headers=norm_headers,
+                    content=b"",
+                    not_modified=True,
+                    etag=norm_headers.get("etag") or etag,
+                    last_modified=norm_headers.get("last-modified") or last_modified,
+                )
+
+            content_length_raw = norm_headers.get("content-length")
+            if (
+                content_length_raw
+                and content_length_raw.isdigit()
+                and int(content_length_raw) > max_bytes
+            ):
+                raise ResponseTooLargeError(
+                    f"Response Content-Length ({content_length_raw} bytes) "
+                    f"exceeds limit ({max_bytes})."
+                )
+
+            chunks: list[bytes] = []
+            total_bytes = 0
+            for chunk in response.iter_bytes(chunk_size=16384):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise ResponseTooLargeError(
+                        f"Response body exceeded maximum allowed size ({max_bytes} bytes)."
+                    )
+                chunks.append(chunk)
+
+            if response.status_code >= 500:
+                raise ScannerError(f"Upstream server returned HTTP {response.status_code}.")
+
+            return FetchedResponse(
+                url=original_url,
+                final_url=current_url,
+                status_code=response.status_code,
+                headers=norm_headers,
+                content=b"".join(chunks),
+                not_modified=False,
+                etag=norm_headers.get("etag"),
+                last_modified=norm_headers.get("last-modified"),
+            )

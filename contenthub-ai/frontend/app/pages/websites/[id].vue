@@ -54,7 +54,9 @@ const contentTabFilter = ref<string>('all')
 
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
-const activeTab = ref<'overview' | 'content' | 'scanner' | 'history' | 'settings'>('overview')
+const activeTab = ref<
+  'overview' | 'content' | 'scanner' | 'history' | 'social_profiles' | 'ai_settings' | 'settings'
+>('overview')
 const triggeringScan = ref(false)
 const testingConnectivity = ref(false)
 const discoveringSources = ref(false)
@@ -99,6 +101,7 @@ const settingsForm = ref({
   tone: '',
   brand_description: '',
   target_keywords_text: '',
+  keyword_bank_text: '',
   restricted_keywords_text: '',
   default_hashtags_text: '',
   default_cta: '',
@@ -157,6 +160,7 @@ function syncSettingsForm(site: Website) {
     tone: site.tone || '',
     brand_description: site.brand_description || '',
     target_keywords_text: site.target_keywords.join(', '),
+    keyword_bank_text: site.keyword_bank.join(', '),
     restricted_keywords_text: site.restricted_keywords.join(', '),
     default_hashtags_text: site.default_hashtags.join(', '),
     default_cta: site.default_cta || '',
@@ -501,6 +505,7 @@ async function saveWebsiteSettings() {
       tone: f.tone.trim() || null,
       brand_description: f.brand_description.trim() || null,
       target_keywords: parseCsvOrLines(f.target_keywords_text),
+      keyword_bank: parseCsvOrLines(f.keyword_bank_text),
       restricted_keywords: parseCsvOrLines(f.restricted_keywords_text),
       default_hashtags: parseCsvOrLines(f.default_hashtags_text),
       default_cta: f.default_cta.trim() || null,
@@ -551,6 +556,13 @@ watch(websiteId, () => {
 })
 
 onMounted(() => {
+  const qTab = String(route.query.tab || '').trim().toLowerCase()
+  if (qTab === 'social-profiles' || qTab === 'social_profiles') {
+    activeTab.value = 'social_profiles'
+  }
+  else if (qTab === 'ai-settings' || qTab === 'ai_settings') {
+    activeTab.value = 'ai_settings'
+  }
   void loadAll()
 })
 
@@ -718,7 +730,7 @@ onUnmounted(() => {
     />
 
     <template v-else-if="website">
-      <!-- 5 Structured Tabs -->
+      <!-- 7 Structured Tabs -->
       <div class="flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800">
         <button
           v-for="tab in [
@@ -726,6 +738,8 @@ onUnmounted(() => {
             { id: 'content', label: `Content (${website.content_counts.total_discovered})` },
             { id: 'scanner', label: 'Scanner & URL Rules' },
             { id: 'history', label: `Scan History (${scanLogs.length})` },
+            { id: 'social_profiles', label: 'Social Profiles' },
+            { id: 'ai_settings', label: 'AI Settings' },
             { id: 'settings', label: 'Settings & Brand Profile' },
           ]"
           :key="tab.id"
@@ -757,8 +771,10 @@ onUnmounted(() => {
             <p class="mt-1 text-lg font-semibold">{{ website.content_counts.homepage }}</p>
           </div>
           <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
-            <p class="text-[11px] text-slate-500">Pages</p>
-            <p class="mt-1 text-lg font-semibold">{{ website.content_counts.page }}</p>
+            <p class="text-[11px] text-slate-500">Pages / Games</p>
+            <p class="mt-1 text-lg font-semibold">
+              {{ website.content_counts.page }} / {{ website.content_counts.game_page ?? 0 }}
+            </p>
           </div>
           <div class="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
             <p class="text-[11px] text-slate-500">Blog Indexes</p>
@@ -884,6 +900,7 @@ onUnmounted(() => {
                 { key: 'all', label: 'All' },
                 { key: 'homepage', label: 'Homepage' },
                 { key: 'pages', label: 'Pages' },
+                { key: 'game_pages', label: 'Game Pages' },
                 { key: 'blog_posts', label: 'Blog Posts' },
                 { key: 'blog_indexes', label: 'Blog Indexes' },
                 { key: 'other', label: 'Other' },
@@ -1182,7 +1199,25 @@ onUnmounted(() => {
         </table>
       </div>
 
-      <!-- TAB 5: SETTINGS & BRAND PROFILE -->
+      <!-- TAB 5: SOCIAL PROFILES -->
+      <WebsiteSocialProfilesTab
+        v-else-if="activeTab === 'social_profiles'"
+        :website-id="website.id"
+        :website-name="website.name"
+        :default-language="website.primary_language"
+        :default-tone="website.tone"
+        :default-cta="website.default_cta"
+        :default-hashtags="website.default_hashtags"
+      />
+
+      <!-- TAB 6: AI SETTINGS & KNOWLEDGE PROFILE -->
+      <WebsiteAiSettingsTab
+        v-else-if="activeTab === 'ai_settings'"
+        :website="website"
+        @updated="website = $event; syncSettingsForm($event)"
+      />
+
+      <!-- TAB 7: SETTINGS & BRAND PROFILE -->
       <form
         v-else
         class="space-y-6 rounded-lg border border-slate-200 bg-white p-5 text-xs dark:border-slate-800 dark:bg-slate-900"
@@ -1294,6 +1329,15 @@ onUnmounted(() => {
           <div>
             <label class="mb-1 block font-medium">Target Keywords</label>
             <UInput v-model="settingsForm.target_keywords_text" placeholder="comma-separated" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="mb-1 block font-medium">Keyword Bank</label>
+            <UTextarea
+              v-model="settingsForm.keyword_bank_text"
+              :rows="3"
+              placeholder="Reference keywords for new blogs/articles (comma or newline separated)"
+            />
+            <p class="mt-1 text-xs text-slate-500">Used as keyword suggestions when creating new content.</p>
           </div>
           <div>
             <label class="mb-1 block font-medium">Default Hashtags</label>
@@ -1418,6 +1462,7 @@ onUnmounted(() => {
                 <option value="blog_post">Blog Post</option>
                 <option value="blog_index">Blog Index</option>
                 <option value="page">Page</option>
+                <option value="game_page">Game Page</option>
                 <option value="category">Category</option>
                 <option value="tag">Tag</option>
                 <option value="archive">Archive</option>

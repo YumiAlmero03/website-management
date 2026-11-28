@@ -55,7 +55,7 @@ function handleNavClick() {
             ContentHub AI
           </p>
           <p class="truncate text-[11px] text-slate-500 dark:text-slate-400">
-            Phase 2.1 Website Hub
+            Phase 3 AI & Social
           </p>
         </div>
       </NuxtLink>
@@ -86,7 +86,7 @@ function handleNavClick() {
       </button>
     </div>
 
-    <!-- Navigation links (14 modules) -->
+    <!-- Navigation links (15 modules) -->
     <nav class="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
       <NuxtLink
         v-for="item in SIDEBAR_MODULES"
@@ -116,6 +116,12 @@ function handleNavClick() {
           class="min-w-0 flex-1 truncate"
         >
           {{ item.label }}
+        </span>
+        <span
+          v-if="(!uiStore.sidebarCollapsed || uiStore.mobileSidebarOpen) && item.id === 'content-approval' && uiStore.pendingApprovalsCount > 0"
+          class="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"
+        >
+          {{ uiStore.pendingApprovalsCount }}
         </span>
         <span
           v-if="(!uiStore.sidebarCollapsed || uiStore.mobileSidebarOpen) && !item.implemented"

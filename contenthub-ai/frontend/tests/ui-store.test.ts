@@ -7,6 +7,7 @@ const emptyCounts = {
   total_extracted: 0,
   homepage: 0,
   page: 0,
+  game_page: 0,
   blog_index: 0,
   blog_post: 0,
   category: 0,

@@ -6,6 +6,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.schemas.common import PaginationMeta
+from app.schemas.keyword_approval import (
+    ContentApprovalItemResponse,
+    ContentKeywordResponse,
+)
 from app.schemas.media import MediaAssetResponse
 
 
@@ -26,6 +30,7 @@ class ContentStatsResponse(BaseModel):
     total_extracted: int = 0
     homepage_count: int = 0
     page_count: int = 0
+    game_page_count: int = 0
     blog_post_count: int = 0
     blog_index_count: int = 0
     other_count: int = 0
@@ -72,6 +77,11 @@ class ContentListItemResponse(BaseModel):
     first_discovered_at: datetime
     last_discovered_at: datetime
     last_checked_at: datetime
+    approval_status: str | None = None
+    keyword_approval_status: str | None = None
+    focus_keyphrase: str | None = None
+    secondary_keywords: list[str] = Field(default_factory=list)
+    cannibalization_count: int = 0
 
 
 class ContentDetailResponse(ContentListItemResponse):
@@ -84,6 +94,8 @@ class ContentDetailResponse(ContentListItemResponse):
     structured_data_json: dict[str, Any] | None = None
     featured_media: MediaAssetResponse | None = None
     revision_count: int = 0
+    keyword_mapping: ContentKeywordResponse | None = None
+    content_approval: ContentApprovalItemResponse | None = None
     created_at: datetime
     updated_at: datetime
 

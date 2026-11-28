@@ -4,6 +4,7 @@ import {
   Activity,
   BarChart3,
   CalendarDays,
+  CheckSquare,
   Compass,
   FileText,
   Globe,
@@ -24,6 +25,7 @@ const props = defineProps<{
 
 const ICON_MAP: Record<string, Component> = {
   LayoutDashboard,
+  CheckSquare,
   Tags,
   Globe,
   Library,

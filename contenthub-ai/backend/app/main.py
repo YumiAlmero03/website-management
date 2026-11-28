@@ -13,14 +13,18 @@ from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger
 from app.database import reset_engine
 from app.routers import (
+    ai,
     auth,
     categories,
+    content_approvals,
     contents,
     dashboard,
     health,
     logs,
     media,
     scans,
+    social_posts,
+    social_profiles,
     websites,
 )
 from app.routers import settings as settings_router
@@ -99,7 +103,11 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(websites.router, prefix=api_prefix)
     app.include_router(scans.router, prefix=api_prefix)
     app.include_router(contents.router, prefix=api_prefix)
+    app.include_router(content_approvals.router, prefix=api_prefix)
     app.include_router(media.router, prefix=api_prefix)
+    app.include_router(social_profiles.router, prefix=api_prefix)
+    app.include_router(ai.router, prefix=api_prefix)
+    app.include_router(social_posts.router, prefix=api_prefix)
 
     return app
 

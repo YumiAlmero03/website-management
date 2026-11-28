@@ -514,7 +514,7 @@ onMounted(() => {
                 {{ site.content_counts.total_discovered }} URLs
               </p>
               <p class="text-[11px] text-slate-500">
-                {{ site.content_counts.homepage }}H · {{ site.content_counts.page }}P · {{ site.content_counts.blog_post }} Posts
+                {{ site.content_counts.homepage }}H · {{ site.content_counts.page }}P · {{ site.content_counts.game_page ?? 0 }}G · {{ site.content_counts.blog_post }} Posts
                 <span
                   v-if="site.content_counts.failed > 0"
                   class="text-amber-600 dark:text-amber-400"

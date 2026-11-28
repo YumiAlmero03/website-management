@@ -51,6 +51,7 @@ class ExtractedContent:
     published_at: datetime | None = None
     source_updated_at: datetime | None = None
     headings: list[str] = field(default_factory=list)
+    images: list[dict[str, str]] = field(default_factory=list)
 
 
 def _extract_main_html_trafilatura(raw_html: str, *, page_url: str) -> str | None:
@@ -144,6 +145,7 @@ class ContentExtractionEngine:
         is_landing = content_type in {
             "homepage",
             "page",
+            "game_page",
             "custom",
             "blog_index",
             "category",
@@ -259,6 +261,7 @@ class ContentExtractionEngine:
             published_at=published_at,
             source_updated_at=source_updated_at,
             headings=meta.headings,
+            images=meta.images,
         )
 
     def extract_from_markdown(

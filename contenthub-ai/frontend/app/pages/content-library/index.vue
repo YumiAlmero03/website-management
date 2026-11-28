@@ -7,6 +7,7 @@ import {
   formatDateTime,
   getContentTypeMeta,
 } from '~/utils/format'
+import { isContentEligibleForManualGeneration } from '~/utils/ai'
 
 const route = useRoute()
 const { request } = useApiClient()
@@ -34,6 +35,7 @@ const stats = ref<ContentStats>({
   total_extracted: 0,
   homepage_count: 0,
   page_count: 0,
+  game_page_count: 0,
   blog_post_count: 0,
   blog_index_count: 0,
   other_count: 0,
@@ -54,6 +56,7 @@ const tabs = computed(() => [
   { key: 'all', label: 'All Content', count: stats.value.total_discovered },
   { key: 'homepage', label: 'Homepage', count: stats.value.homepage_count },
   { key: 'pages', label: 'Pages', count: stats.value.page_count },
+  { key: 'game_pages', label: 'Game Pages', count: stats.value.game_page_count ?? 0 },
   { key: 'blog_posts', label: 'Blog Posts', count: stats.value.blog_post_count },
   { key: 'blog_indexes', label: 'Blog Indexes', count: stats.value.blog_index_count },
   { key: 'other', label: 'Other', count: stats.value.other_count },
@@ -191,6 +194,14 @@ watch([activeTab, websiteFilter, categoryFilter, changeFilter, sortBy], () => {
 watch(page, () => {
   void loadContents()
 })
+
+const generateModalOpen = ref(false)
+const generateTarget = ref<ContentListItem | null>(null)
+
+function openGenerateModal(item: ContentListItem) {
+  generateTarget.value = item
+  generateModalOpen.value = true
+}
 
 onMounted(() => {
   void Promise.all([uiStore.refreshGlobalSelectors(), loadContents()])
@@ -506,6 +517,16 @@ onMounted(() => {
                     class="h-3.5 w-3.5"
                   />
                 </UButton>
+                <UButton
+                  v-if="isContentEligibleForManualGeneration(item)"
+                  color="primary"
+                  variant="subtle"
+                  size="xs"
+                  title="Generate Social Drafts"
+                  @click="openGenerateModal(item)"
+                >
+                  Generate
+                </UButton>
               </div>
             </td>
           </tr>
@@ -539,5 +560,12 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <GenerateSocialModal
+      :open="generateModalOpen"
+      :content="generateTarget"
+      @update:open="generateModalOpen = $event"
+      @generated="loadContents()"
+    />
   </div>
 </template>

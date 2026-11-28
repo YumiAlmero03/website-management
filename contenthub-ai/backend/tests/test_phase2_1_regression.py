@@ -396,9 +396,18 @@ def test_scenario_11_to_16_deterministic_classification_and_custom_rules(
     assert classify_url("https://bygame.ph/", domain="bygame.ph").content_type == "homepage"
     assert classify_url("https://bygame.ph/about-us/", domain="bygame.ph").content_type == "page"
     assert classify_url("https://bygame.ph/promos/", domain="bygame.ph").content_type == "page"
+    assert classify_url("https://bygame.ph/games/", domain="bygame.ph").content_type == "page"
     assert (
         classify_url("https://bygame.ph/game/sample-game/", domain="bygame.ph").content_type
-        == "page"
+        == "game_page"
+    )
+    assert (
+        classify_url("https://bygame.ph/games/live-baccarat/", domain="bygame.ph").content_type
+        == "game_page"
+    )
+    assert (
+        classify_url("https://bygame.ph/games/category/slots/", domain="bygame.ph").content_type
+        == "category"
     )
     assert classify_url("https://bygame.ph/blog/", domain="bygame.ph").content_type == "blog_index"
     assert classify_url("https://bygame.ph/blogs", domain="bygame.ph").content_type == "blog_index"

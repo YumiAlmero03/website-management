@@ -3,13 +3,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request, status
 
 from app.core.dependencies import (
     extract_client_ip,
+    get_ai_generation_service,
     get_content_service,
+    get_social_post_service,
     require_admin,
     require_csrf,
+)
+from app.schemas.ai import (
+    AiGenerationJobResponse,
+    GenerateSocialDestinationsPreview,
+    GenerateSocialRequest,
 )
 from app.schemas.content import (
     ContentDetailResponse,
@@ -18,8 +25,11 @@ from app.schemas.content import (
     ContentStatsResponse,
     ContentUpdateRequest,
 )
+from app.schemas.social_post import SocialPostResponse
+from app.services.ai.generation_service import AiGenerationService
 from app.services.auth_service import AuthenticatedSession
 from app.services.content_service import ContentService
+from app.services.social_post_service import SocialPostService
 
 router = APIRouter(prefix="/contents", tags=["Content Library"])
 
@@ -123,3 +133,45 @@ def list_content_revisions(
     content_service: Annotated[ContentService, Depends(get_content_service)],
 ) -> list[ContentRevisionResponse]:
     return content_service.list_revisions(content_id)
+
+
+@router.get(
+    "/{content_id}/social-destinations",
+    response_model=GenerateSocialDestinationsPreview,
+)
+def get_content_social_destinations(
+    content_id: int,
+    _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
+    generation_service: Annotated[AiGenerationService, Depends(get_ai_generation_service)],
+) -> GenerateSocialDestinationsPreview:
+    return generation_service.preview_destinations(content_id)
+
+
+@router.post(
+    "/{content_id}/generate-social",
+    response_model=AiGenerationJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def generate_social_for_content(
+    content_id: int,
+    request: Request,
+    admin: Annotated[AuthenticatedSession, Depends(require_csrf)],
+    generation_service: Annotated[AiGenerationService, Depends(get_ai_generation_service)],
+    payload: Annotated[GenerateSocialRequest | None, Body()] = None,
+) -> AiGenerationJobResponse:
+    return generation_service.enqueue_social_generation(
+        content_id,
+        payload or GenerateSocialRequest(),
+        user_id=admin.user.id,
+        ip_address=extract_client_ip(request),
+    )
+
+
+@router.get("/{content_id}/social-posts", response_model=list[SocialPostResponse])
+def list_content_social_posts(
+    content_id: int,
+    _admin: Annotated[AuthenticatedSession, Depends(require_admin)],
+    post_service: Annotated[SocialPostService, Depends(get_social_post_service)],
+) -> list[SocialPostResponse]:
+    res = post_service.list_posts(website_content_id=content_id, page=1, page_size=100)
+    return res.items

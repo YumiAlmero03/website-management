@@ -17,18 +17,26 @@ Development proceeds strictly one phase at a time. Each phase ends with validati
 - Administrator-defined Custom Website Categories under Settings (`website_categories` CRUD, archive, delete-when-unused guard, inline category creation)
 - Simplified 5-field Register Website flow with expandable Advanced Settings (`website_type`, brand voice, custom endpoints, `crawl_batch_size`, `crawl_max_urls_per_run`, `single_source_only`)
 - Fixed scanner bugs: replaced first-success-only discovery with true multi-source aggregation (`WebsiteDiscoveryManager`), isolated per-endpoint `ETag`/`Last-Modified` in `website_discovery_sources` (304 no longer drops items or halts sitemaps), supported recursive/custom `.php`/`.xml.gz` sitemaps detected by XML body, lifted 100-URL truncation via two-phase discovery (`website_scan_items`) + resumable batched extraction (`Discover URLs`, `Full Scan`, `Check New Content`, `Retry Failed URLs`, `Resume Incomplete Scan`)
-- Deterministic URL classifier (`website_url_rules` + `classifier.py`) supporting `homepage`, `page`, `blog_index`, `blog_post`, `category`, `tag`, `archive`, `custom` + manual override pinning
+- Deterministic URL classifier (`website_url_rules` + `classifier.py`) supporting `homepage`, `page`, `game_page`, `blog_index`, `blog_post`, `category`, `tag`, `archive`, `custom` + manual override pinning
 - Redesigned Universal Content Library (`/content-library` -> `/api/v1/contents`) with 7 live-count tabs, per-URL failure inspection/retry, and 5-tab Website Detail Workspace (`/websites/[id]`)
 
-## Phase 3 — Gemini AI Engine *(Next)*
-- Official Google Gen AI SDK provider configuration as the **sole** AI generation provider (encrypted API keys, dynamic model listing & availability check)
-- Python-first Token Optimization Engine (clean Markdown, extractive summarization, compact structured context)
-- Prompt Template management & structured Pydantic JSON output validation
-- MySQL `ai_response_cache` keyed by model, prompt version, settings, brand instructions, and source hash
-- Daily request/token quota guard (no automatic fallback to paid tiers) and token usage reporting
-- Multi-platform social caption generation in batched requests
+## Phase 3 — Gemini AI Engine and Social Profile Management *(Completed — Ready for Review)*
+- Official `google-genai` SDK integration (`ai_providers`) with Fernet-encrypted API keys, connection/probe tests, dynamic model refresh ranked Flash/Flash-Lite first, and zero silent paid fallback
+- Website-owned Social Profiles (`platforms`, `social_profiles`) supporting multiple profiles per platform per website, manual vs API readiness modes (`auto_publish_enabled` locked `false`), and dynamic Fernet-encrypted credentials
+- Reusable Website Knowledge Profiles (`website_knowledge_profiles` + revisions) synthesized from compact prioritized core pages with admin override preservation, field provenance, and stale fingerprinting
+- Prompt Manager (`prompt_templates` + revisions) using restricted Jinja2 `SandboxedEnvironment`, explicit `ALLOWED_PROMPT_VARIABLES`, offline prompt preview without Gemini calls, and multi-tier scope precedence
+- Python-first Token Optimization (`metadata_only` / `optimized` / `full`) and website-scoped SHA-256 `ai_response_cache`, paired with `ai_generation_jobs`, `ai_generation_logs`, CLI workers (`run-ai-job`, `run-pending-ai-jobs`), Resource Guardian protection, and post-baseline `blog_post` auto-scan generation hooks
+- Multi-profile Social Draft Management (`social_posts`, `social_post_revisions`, `/social-media`, `/ai-management`, and 7-tab `/websites/[id]`) with zero manual platform checkboxes during generation, platform-aware length checks (X 23-char URL counting), edit/approve/reject/archive/regenerate workflows, and copy/download media helpers
+- SEO Keyword Mapping & Content Approval Gate (`20261127_0005` — `content_keywords`, `content_approvals`, `/content-approval`, Keyword Map, `KeywordReuseService`, cannibalization detection): Python-first focus/secondary/anchor/image-alt suggestions, inline keyword editing during approval, single & bulk approve/reject/reopen workflows preserving approved keywords across scans, and automatic social generation strictly gated on approved post-baseline content & keywords
 
-## Phase 4 — Social Media Publishing
+### Phase 3 Acceptance Criteria
+- Newly discovered homepages, pages, game pages, and blog posts automatically enter the Content Approval queue (`awaiting_extraction` → `pending_review`) with Python-extracted focus keyphrase, secondary keywords, clickable link anchor variations, and factual image alt suggestions (never auto-approved; zero Gemini calls required per URL; zero fabricated search metrics).
+- Administrators can review URL, extracted content preview, meta description, publication/discovery dates, and edit content classification, focus keyphrase, secondary keywords, anchors, and image alt text inline via always-open text boxes in `/content-approval` (without an Edit toggle) and `/content-library/[id]`.
+- Approved keywords remain locked (`is_admin_locked`) across subsequent website scans, unchanged duplicates do not create duplicate approval requests, rejected URLs stay excluded from AI generation & unchanged rescans, and meaningful content updates transition to `needs_rereview`.
+- Non-blocking cannibalization warnings highlight same-website focus keyphrase overlaps without auto-deleting/merging; `KeywordReuseService` serves approved mappings (`website_id`, `content_id`, `canonical_url`, `title`, `content_type`, `focus_keyphrase`, `secondary_keywords`, `anchor_text_variations`, `approval_status`).
+- Automatic social draft generation runs **once** only when website auto-generation is active, social profiles are eligible, and newly published non-baseline `blog_post` content and keywords are both approved, injecting approved keywords/links into prompts & cache fingerprints while preserving already approved drafts.
+
+## Phase 4 — Social Media Publishing *(Next)*
 - Social Post editor (captions, variants, hashtags, UTM builder, character limits, language & brand guidelines)
 - Modular Publisher Adapter interface + Priority 1 integrations: Facebook Pages Graph API & Manual Publishing fallback
 - Post approval workflow (Manual / Semi-automatic default / Automatic rules)

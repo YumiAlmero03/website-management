@@ -35,6 +35,7 @@ async function loadDashboard(showToast = false) {
       query.website_id = uiStore.selectedWebsiteId
     }
     summary.value = await request<DashboardSummary>('/api/v1/dashboard/summary', { query })
+    uiStore.setPendingApprovalsCount(summary.value.phase2_metrics.pending_content_approvals ?? 0)
     if (showToast) {
       toast.add({
         title: 'Dashboard refreshed',
@@ -142,6 +143,14 @@ onMounted(() => {
               </option>
             </select>
             <UButton
+              to="/content-approval"
+              color="neutral"
+              variant="outline"
+              size="xs"
+            >
+              Content Approval ({{ summary.phase2_metrics.pending_content_approvals ?? 0 }})
+            </UButton>
+            <UButton
               to="/content-library"
               color="neutral"
               variant="outline"
@@ -169,7 +178,7 @@ onMounted(() => {
           <MetricCard
             title="Discovered Content"
             :value="summary.phase2_metrics.total_contents"
-            :subtitle="`${summary.phase2_metrics.homepage_count} home · ${summary.phase2_metrics.page_count} pages · ${summary.phase2_metrics.blog_post_count} posts`"
+            :subtitle="`${summary.phase2_metrics.homepage_count} home · ${summary.phase2_metrics.page_count} pages · ${summary.phase2_metrics.game_page_count ?? 0} games · ${summary.phase2_metrics.blog_post_count} posts · ${summary.phase2_metrics.pending_content_approvals ?? 0} awaiting approval`"
             icon="Library"
           />
           <MetricCard
@@ -186,6 +195,24 @@ onMounted(() => {
             icon="Activity"
             :status="summary.phase2_metrics.failed_scans > 0 || summary.phase2_metrics.incomplete_scans > 0 ? 'warning' : 'ok'"
           />
+        </div>
+
+        <div
+          v-if="(summary.phase2_metrics.pending_content_approvals ?? 0) > 0"
+          class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <span>
+            <strong>{{ summary.phase2_metrics.pending_content_approvals }}</strong> discovered content record(s) need review & keyword approval before automatic AI social generation. ({{ summary.phase2_metrics.approved_keywords_count ?? 0 }} approved.)
+          </span>
+          <UButton
+            to="/content-approval"
+            color="warning"
+            variant="solid"
+            size="xs"
+          >
+            Review & Approve Queue
+            <ArrowRight class="ml-1 h-3.5 w-3.5" />
+          </UButton>
         </div>
       </section>
 
@@ -389,22 +416,22 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- Honest Future-Phase Modules Grid (Phases 3–6) -->
+      <!-- Honest Future-Phase Modules Grid (Phases 4–6) -->
       <section aria-label="Upcoming roadmap modules">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Upcoming Modules (Phases 3–6 — Not Yet Implemented)
+              Upcoming Modules (Phases 4–6 — Not Yet Implemented)
             </h2>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Gemini AI, social publishing, editorial drafting, and automation metrics remain honestly withheld until their scheduled phases.
+              Live external publishing adapters, editorial article drafting, persistent scheduler workers, and analytics remain honestly withheld until their scheduled phases.
             </p>
           </div>
           <UBadge
             color="primary"
             variant="subtle"
           >
-            Active: Phase 2 Website Monitoring
+            Active: Phase 3 — Gemini AI, Approvals & Drafts
           </UBadge>
         </div>
 

@@ -37,9 +37,9 @@ ContentHub AI uses a **modular monolith** architecture paired with **separate Py
                                         └──────────────────────────┘
 ```
 
-1. **Nuxt 4 Frontend (`frontend/` — Active Phases 1–2.1):** Desktop-first administrative dashboard built with Nuxt 4 (`app/` directory), TypeScript, Tailwind CSS v4, Nuxt UI v4, Pinia, and Lucide Icons. Employs a simplified **Website-Centric** workspace (no standalone `/brands` section), Settings-managed Website Categories, a 5-tab Website Detail Console, and a Universal Content Library with live tab counts.
-2. **FastAPI Backend (`backend/` — Active Phases 1–2.1):** Python 3.12 REST API handling auth, CSRF, Settings/Categories, Website + merged Brand management, URL Rules, Discovery Sources, Content Library & Revisions, and Media assets.
-3. **Python Background Executor & Worker (`backend/app/cli.py`, `backend/workers/`):** Non-blocking detached scan execution (`run-scan --scan-id`) and Cron scheduler (`run-due-scans`) with MySQL advisory locking, batched checkpoints, stale recovery, and `psutil` Resource Guardian deferral.
+1. **Nuxt 4 Frontend (`frontend/` — Active Phases 1–3):** Desktop-first administrative dashboard built with Nuxt 4 (`app/` directory), TypeScript, Tailwind CSS v4, Nuxt UI v4, Pinia, and Lucide Icons. Employs a **Website-Centric** workspace (no standalone `/brands`), 7-tab `/websites/[id]` workspace (including `Social Profiles` & `AI Settings`), Universal Content Library with Generate Social modal, **AI Management Center** (`/ai-management`), and **Social Media Draft Queue** (`/social-media`).
+2. **FastAPI Backend (`backend/` — Active Phases 1–3):** Python 3.12 REST API handling auth, CSRF, Settings/Categories, Website + merged Brand management, URL Rules, Discovery Sources, Content Library, Media assets, Website Social Profiles, Gemini AI configurations, Website Knowledge Profiles, Sandboxed Prompts, Response Cache, Generation Jobs/Usage/CSV History, and Draft Management.
+3. **Python Background Executor & Worker (`backend/app/cli.py`, `backend/workers/`):** Non-blocking detached scan and AI generation execution (`run-scan`, `run-due-scans`, `run-ai-job`, `run-pending-ai-jobs`) with MySQL advisory locking & row-locked `FOR UPDATE` claiming, batched checkpoints, stale recovery, and `psutil` Resource Guardian deferral.
 
 ## 3. Website-Centric Aggregated Multi-Source Discovery *(Phase 2.1)*
 
@@ -103,7 +103,9 @@ flowchart LR
     BlogRoot -- Yes --> OutBI[blog_index]
     BlogRoot -- No --> BlogPost{Post Path /blog/*, /blogs/*, /news/*, yyyy/mm/slug?}
     BlogPost -- Yes --> OutBP[blog_post]
-    BlogPost -- No --> Schema{JSON-LD Article / BlogPosting or og:type=article?}
+    BlogPost -- No --> GamePath{Game Path /game/* or /games/*?}
+    GamePath -- Yes --> OutGP[game_page]
+    GamePath -- No --> Schema{JSON-LD Article / BlogPosting or og:type=article?}
     Schema -- Yes --> OutBP
     Schema -- No --> OutP[page fallback — retain valid pages without requiring article metadata]
 ```
@@ -132,24 +134,70 @@ stateDiagram-v2
     cancelled --> [*]
 ```
 
+## 5.1 Phase 3 — Gemini AI Engine & Multi-Profile Social Draft Flow
+
+```mermaid
+flowchart TD
+    Trigger["Manual Generate Content or Auto-Scan New Blog Post"] --> Guard{"Active generation_enabled Social Profiles >= 1?"}
+    Guard -- "No (0 Profiles)" --> Block["Return Prompt to Configure Website Social Profiles (No Gemini Call)"]
+    Guard -- Yes --> Enqueue["Enqueue MySQL ai_generation_jobs Row"]
+    Enqueue --> Claim["CLI Worker Transactional Claim (SELECT FOR UPDATE)"]
+    Claim --> RG{"Resource Guardian Healthy & Concurrent Slots Open?"}
+    RG -- Critical / Busy --> Defer["Defer Job Safely in MySQL for Retry"]
+    RG -- Healthy --> Prep["Python Context Prep (metadata_only / optimized / full) + Website Knowledge Profile"]
+    Prep --> Render["Sandboxed Jinja2 Prompt Rendering + Destination Profile Specs"]
+    Render --> Cache{"Valid Website-Scoped SHA-256 Cache Hit?"}
+    Cache -- Yes --> RecordHit["Record cache_hit=true Log (Zero Tokens)"]
+    Cache -- No --> Quota{"Free-First Daily Requests / Tokens & RPM Available?"}
+    Quota -- Exhausted --> Defer
+    Quota -- Available --> Gemini["google-genai Interactions Structured JSON Output"]
+    Gemini --> Validate{"Validate social_profile_id Ownership & Platform Limits"}
+    Validate -- "Invalid / Foreign Profile ID" --> FailJob["Fail Explicitly Without Caching or Writing Foreign Drafts"]
+    Validate -- "Validated (Full or Partial)" --> StoreCache["Persist Validated Output to ai_response_cache"]
+    RecordHit & StoreCache --> Drafts["Save social_posts & social_post_revisions (pending_review / generation_failed)"]
+```
+
+## 5.2 Phase 3 — SEO Keyword Mapping, Content Approval & Auto-Generation Gating
+
+```mermaid
+flowchart TD
+    Scan[Scanner Discovers & Extracts Eligible URL] --> Queue["Create awaiting_extraction -> pending_review + Python Focus/Secondary/Anchor/Image Alt Suggestions"]
+    Scan --> Unchanged{"Already Approved or Rejected & Content Unchanged?"}
+    Unchanged -- Yes --> Preserve["Preserve Existing Approval Decision & Locked Approved Keywords"]
+    Unchanged -- No --> Changed["Meaningful Update -> Transition to needs_rereview (Keep Approved Keywords)"]
+    Queue & Changed --> Review["/content-approval or Content Library Detail Review"]
+    Review --> InlineEdit["Edit Focus Keyphrase, Secondary Keywords, Anchors, Alt Text, Classification Inline"]
+    InlineEdit --> Cannibal{"Check Same-Website Focus Overlap (RapidFuzz)"}
+    Cannibal -- Overlap Found --> Warn["Non-Blocking Cannibalization Warning Shown"]
+    InlineEdit & Warn --> Approve["Approve Content & Keyword Mapping Atomically"]
+    Review --> Reject["Reject Content (Excluded from AI Generation)"]
+    Approve --> Eligibility{"Website Active & auto_generate & Post-Baseline blog_post & First Trigger?"}
+    Eligibility -- Yes --> AutoGen["Enqueue Auto Social Draft Job Using Focus Keyphrase, Secondary Keywords & Internal Links"]
+    Eligibility -- No --> KeywordMap["Available in Keyword Map & KeywordReuseService"]
+    AutoGen --> KeywordMap
+```
+
 ## 6. Backend Internal Layering
 
 ```text
 backend/app/
 ├── main.py            # App factory, CORS, security headers, middleware, router mounting
-├── config.py          # Pydantic Settings loaded from .env (Phases 1–2.1)
+├── config.py          # Pydantic Settings loaded from .env (Phases 1–3)
 ├── database.py        # SQLAlchemy 2 engine, pool configuration, MySQL health/version probe
-├── cli.py             # CLI: check-db, init-admin, run-scan, run-due-scans
+├── cli.py             # CLI: check-db, init-admin, run-scan, run-due-scans, run-ai-job, run-pending-ai-jobs
 ├── core/              # Argon2id, Fernet, sessions, CSRF, rate limit, redaction, deps
-├── models/            # Phase 1 (4) + Phase 2.1 (9) = 13 SQLAlchemy InnoDB/utf8mb4 models
-├── schemas/           # Pydantic v2 API request & response contracts (category, website, content, media, dashboard)
-├── repositories/      # Protocol + SQLAlchemy repositories (Phase 1 & Phase 2.1)
+├── models/            # Phase 1 (4) + Phase 2.1 (9) + Phase 3 (12) + Phase 3 Keywords/Approval (4) = 29 InnoDB/utf8mb4 models
+├── schemas/           # Pydantic v2 contracts (category, website, content, keyword_approval, media, dashboard, social_profile, ai, social_post)
+├── repositories/      # Protocol + SQLAlchemy repositories (Phases 1–3)
 ├── services/
 │   ├── auth_service.py, settings_service.py, dashboard_service.py
 │   ├── category_service.py, website_service.py, scan_executor.py, content_service.py, media_service.py
+│   ├── content_approval_service.py # Approval queue, inline keyword edits, cannibalization & KeywordReuseService
+│   ├── social_profile_service.py, social_post_service.py
 │   ├── monitoring/    # Live psutil Resource Guardian & health checks
 │   ├── scanner/       # Aggregated discovery adapters + classifier + security (15 modules)
-│   ├── content/       # Content-type-aware Trafilatura/BS4/Markdownify/YAKE/RapidFuzz/Pillow (9 modules)
-│   └── ai/, seo/, social/, editorial/, publishers/, scheduler/, analytics/ (Phases 3–6 stubs)
+│   ├── content/       # Extraction, Markdownify, YAKE, Python Keyword Suggester (keyword_suggester.py), RapidFuzz, Pillow
+│   ├── ai/            # Gemini SDK adapter, quotas, knowledge, sandboxed prompts, cache, validator, generation jobs
+│   └── seo/, editorial/, publishers/, scheduler/, analytics/ (Phases 4–6 stubs)
 └── routers/           # Lightweight FastAPI HTTP routers
 ```

@@ -8,6 +8,7 @@ from app.models.base import ensure_utc, utc_now
 from app.repositories.activity_log_repo import ActivityLogRepositoryProtocol
 from app.repositories.category_repo import WebsiteCategoryRepositoryProtocol
 from app.repositories.content_repo import ContentRepositoryProtocol
+from app.repositories.keyword_approval_repo import KeywordApprovalRepositoryProtocol
 from app.repositories.scan_log_repo import ScanLogRepositoryProtocol
 from app.repositories.session_repo import SessionRepositoryProtocol
 from app.repositories.settings_repo import SettingsRepositoryProtocol
@@ -47,20 +48,37 @@ ROADMAP_MODULES: tuple[PhaseModuleStatus, ...] = (
         ),
     ),
     PhaseModuleStatus(
+        key="content_approval",
+        label="Content Approval",
+        route="/content-approval",
+        phase=3,
+        status="active",
+        summary=(
+            "Review discovered pages & posts, edit focus & secondary keywords inline, "
+            "detect cannibalization, and approve content before auto-generation."
+        ),
+    ),
+    PhaseModuleStatus(
         key="ai_management",
         label="Gemini AI Engine",
         route="/ai-management",
         phase=3,
-        status="not_implemented",
-        summary="Token optimization, response cache, quota guard, and prompt templates.",
+        status="active",
+        summary=(
+            "Official Google Gen AI SDK config, prompts, website knowledge profiles, "
+            "response cache, and quota monitoring."
+        ),
     ),
     PhaseModuleStatus(
         key="social_media",
         label="Social Media",
         route="/social-media",
-        phase=4,
-        status="not_implemented",
-        summary="Caption generation, approval queue, UTM builder, and publishing.",
+        phase=3,
+        status="active",
+        summary=(
+            "Multi-profile AI social draft generation, caption editor, approval queue, "
+            "and revision comparison (drafting only; external publishing in Phase 4)."
+        ),
     ),
     PhaseModuleStatus(
         key="connected_accounts",
@@ -129,6 +147,7 @@ class DashboardService:
         website_repo: WebsiteRepositoryProtocol,
         content_repo: ContentRepositoryProtocol,
         scan_log_repo: ScanLogRepositoryProtocol,
+        keyword_approval_repo: KeywordApprovalRepositoryProtocol | None = None,
     ) -> None:
         self.settings = settings
         self.health_service = health_service
@@ -140,6 +159,7 @@ class DashboardService:
         self.website_repo = website_repo
         self.content_repo = content_repo
         self.scan_log_repo = scan_log_repo
+        self.keyword_approval_repo = keyword_approval_repo
 
     def get_summary(
         self,
@@ -192,6 +212,17 @@ class DashboardService:
         websites_due = self.website_repo.count_due(
             now=now, website_id=website_id, category_id=category_id
         )
+        approval_counts = (
+            self.keyword_approval_repo.get_status_counts(
+                website_id=website_id, category_id=category_id
+            )
+            if self.keyword_approval_repo is not None
+            else {}
+        )
+        pending_content_approvals = int(approval_counts.get("pending_review", 0)) + int(
+            approval_counts.get("needs_rereview", 0)
+        )
+        approved_keywords_count = int(approval_counts.get("approved", 0))
 
         recent_scan_rows = self.scan_log_repo.list_recent(
             limit=6,
@@ -255,7 +286,7 @@ class DashboardService:
         return DashboardSummaryResponse(
             generated_at=now,
             timezone=tz_name,
-            current_phase=2,
+            current_phase=3,
             filtered_website_id=website_id,
             filtered_category_id=category_id,
             database=db_health,
@@ -272,6 +303,7 @@ class DashboardService:
                 total_extracted=content_stats["total_extracted"],
                 homepage_count=content_stats["homepage_count"],
                 page_count=content_stats["page_count"],
+                game_page_count=content_stats.get("game_page_count", 0),
                 blog_post_count=content_stats["blog_post_count"],
                 blog_index_count=content_stats["blog_index_count"],
                 other_count=content_stats["other_count"],
@@ -283,6 +315,8 @@ class DashboardService:
                 failed_scans=failed_scans,
                 incomplete_scans=incomplete_scans,
                 websites_due_for_scan=websites_due,
+                pending_content_approvals=pending_content_approvals,
+                approved_keywords_count=approved_keywords_count,
             ),
             recent_scans=recent_scans,
             modules=list(ROADMAP_MODULES),

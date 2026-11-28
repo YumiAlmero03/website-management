@@ -395,7 +395,7 @@ erDiagram
         bigint id PK "AUTO_INCREMENT"
         bigint website_id FK "NOT NULL -> websites.id RESTRICT"
         bigint featured_media_id FK "NULL -> media_assets.id SET NULL"
-        varchar content_type "VARCHAR(32) NOT NULL homepage/page/blog_index/blog_post/category/tag/archive/custom"
+        varchar content_type "VARCHAR(32) NOT NULL homepage/page/game_page/blog_index/blog_post/category/tag/archive/custom"
         varchar classification_method "VARCHAR(32) NOT NULL manual/root/custom_rule/default_rule/json_ld/source_evidence"
         boolean manual_classification_override "NOT NULL DEFAULT 0"
         boolean is_excluded "NOT NULL DEFAULT 0"
@@ -1125,11 +1125,44 @@ Migrations are authored strictly per roadmap phase to preserve stability and sup
 
 1. **Phase 1 (`20261126_0001` — Implemented & Live MySQL Verified):** `users`, `sessions`, `application_settings`, `activity_logs`
 2. **Phase 2 (`20261126_0002` — Implemented & Live MySQL Verified):** `brands`, `media_assets`, `websites`, `source_articles`, `source_article_revisions`, `website_scan_logs`
-3. **Phase 3 (Next):** `ai_providers`, `prompt_templates`, `ai_response_cache`, `ai_generation_logs`
-4. **Phase 4:** `platforms`, `connected_accounts`, `social_posts`, `publishing_schedules`, `publishing_logs`
-5. **Phase 5:** `keyword_research`, `editorial_plans`, `editorial_topics`, `editorial_articles`, `editorial_article_revisions`
-6. **Phase 6:** `publishing_jobs`, `automation_rules`, `scheduled_tasks`, `analytics_records`, `resource_metrics`, `backup_records`
-7. **Phase 7 — QA, Security and Deployment:** Schema verification, rollback testing, and backup/restore drills (no additional core tables)
+3. **Phase 2.1 (`20261127_0003` — Implemented & Live MySQL Verified):** Website-centric merge (`website_categories`, `website_discovery_sources`, `website_url_rules`, `website_contents`, `content_revisions`, `website_scan_items`)
+4. **Phase 3 (`20261127_0004` — Implemented & Live MySQL Verified):** `platforms`, `social_profiles`, `ai_providers`, `website_knowledge_profiles`, `website_knowledge_profile_revisions`, `prompt_templates`, `prompt_template_revisions`, `ai_response_cache`, `ai_generation_jobs`, `ai_generation_logs`, `social_posts`, `social_post_revisions`, plus `websites.auto_generate_require_published_at` and `websites.auto_generate_context_mode`
+5. **Phase 3 Keyword Mapping & Content Approval (`20261127_0005` — Implemented & Live MySQL Verified):** `content_keywords` (one focus keyphrase, secondary keywords, anchor text variations, image-specific alt suggestions, version, `is_admin_locked`), `content_keyword_revisions`, `content_approvals` (`awaiting_extraction`, `pending_review`, `approved`, `rejected`, `needs_rereview`, plus `auto_generation_triggered_at`), and `content_approval_history`
+6. **Phase 4:** Live publishing schedules & logs (`publishing_schedules`, `publishing_logs`, OAuth tokens)
+7. **Phase 5:** `keyword_research`, `editorial_plans`, `editorial_topics`, `editorial_articles`, `editorial_article_revisions`
+8. **Phase 6:** `publishing_jobs`, `automation_rules`, `scheduled_tasks`, `analytics_records`, `resource_metrics`, `backup_records`
+9. **Phase 7 — QA, Security and Deployment:** Schema verification, rollback testing, and backup/restore drills (no additional core tables)
+
+### 5.1 Phase 3 Implemented ERD (`20261127_0004` & `20261127_0005` — InnoDB, `utf8mb4`)
+
+```mermaid
+erDiagram
+    websites ||--o{ social_profiles : "owns destinations"
+    platforms ||--o{ social_profiles : "defines capabilities"
+    websites ||--o| website_knowledge_profiles : "summarizes brand"
+    website_knowledge_profiles ||--o{ website_knowledge_profile_revisions : "versioned snapshots"
+    websites ||--o{ prompt_templates : "optional website scope"
+    social_profiles ||--o{ prompt_templates : "optional profile scope"
+    prompt_templates ||--o{ prompt_template_revisions : "versioned edits"
+    ai_providers ||--o{ ai_generation_jobs : "executes jobs"
+    ai_providers ||--o{ ai_generation_logs : "records usage"
+    ai_providers ||--o{ ai_response_cache : "keys model cache"
+    websites ||--o{ ai_response_cache : "strict isolation"
+    websites ||--o{ ai_generation_jobs : "queues tasks"
+    website_contents ||--o{ ai_generation_jobs : "source article"
+    ai_generation_jobs ||--o{ ai_generation_logs : "audits calls"
+    websites ||--o{ social_posts : "owns drafts"
+    website_contents ||--o{ social_posts : "source article"
+    social_profiles ||--o{ social_posts : "target profile"
+    platforms ||--o{ social_posts : "platform limits"
+    social_posts ||--o{ social_post_revisions : "manual and AI history"
+    websites ||--o{ content_keywords : "owns keyword map"
+    website_contents ||--o| content_keywords : "maps focus & secondary keywords"
+    content_keywords ||--o{ content_keyword_revisions : "keyword edit history"
+    websites ||--o{ content_approvals : "owns approval queue"
+    website_contents ||--o| content_approvals : "gates AI generation"
+    content_approvals ||--o{ content_approval_history : "audit transitions"
+```
 
 ### Alembic & Diagnostic Commands
 

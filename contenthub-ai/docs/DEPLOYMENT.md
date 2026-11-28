@@ -48,6 +48,14 @@ runuser -u www -- /www/wwwroot/webtracker.com/contenthub-ai/backend/.venv/bin/py
 ```
 *(Uses a MySQL `GET_LOCK` advisory lock and `psutil` Resource Guardian so overlapping or high-load runs exit safely.)*
 
+### 6. Optional: Add Scheduled Pending AI Job Recovery in Cron *(aaPanel UI)*
+1. For deferred/queued Phase 3 Gemini draft jobs (quota recovery or Resource Guardian deferrals), add another **5-minute** Cron job:
+```bash
+cd /www/wwwroot/webtracker.com/contenthub-ai/backend
+runuser -u www -- /www/wwwroot/webtracker.com/contenthub-ai/backend/.venv/bin/python -m app.cli run-pending-ai-jobs --limit 10 >> /www/wwwroot/.contenthub-storage/logs/cron-ai-jobs.log 2>&1
+```
+2. When upgrading to Phase 3 on an existing installation, activate `backend/.venv`, install updated dependencies (`pip install -r backend/requirements.txt`), run `.venv/bin/alembic upgrade head`, rebuild `frontend` (`npm run build`), and restart Supervisor/PM2.
+
 ---
 
 ## Backup & Rollback Summary

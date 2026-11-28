@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.cli import run_init_admin
 from app.config import Settings
 from app.services.auth_service import AuthService
@@ -95,3 +97,98 @@ def test_cli_init_admin_password_env_and_check_db(
 
     monkeypatch.setattr(cli, "check_database_connection", lambda settings=None: db_diagnostic_ok)
     assert cli.run_check_db(settings=test_settings) == 0
+
+
+def test_default_subprocess_dispatcher_uses_existing_backend_root(
+    monkeypatch: Any,
+    tmp_path: Any,
+) -> None:
+    from app.config import BACKEND_ROOT
+    from app.services import scan_executor
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: Any) -> object:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(scan_executor.subprocess, "Popen", fake_popen)
+
+    scan_executor.default_subprocess_dispatcher(42)
+
+    assert captured["cmd"][-4:] == ["app.cli", "run-scan", "--scan-id", "42"]
+    assert captured["kwargs"]["cwd"] == str(BACKEND_ROOT)
+    assert BACKEND_ROOT.is_dir()
+
+
+def test_enqueue_scan_marks_failed_when_dispatcher_raises(
+    test_settings: Settings,
+    memory_repos: dict[str, Any],
+    db_diagnostic_ok: Any,
+) -> None:
+    from app.services.monitoring.health_service import HealthService
+    from app.services.scan_executor import ScanExecutorService
+    from app.services.scanner.security import SafeHttpFetcher
+    from app.services.settings_service import SettingsService
+
+    cat = memory_repos["categories"].create({"name": "Casino", "slug": "casino"})
+    site = memory_repos["websites"].create(
+        {
+            "category_id": cat.id,
+            "name": "Fail Dispatch",
+            "brand_name": "Fail Dispatch",
+            "domain": "example.com",
+            "website_type": "custom",
+            "discovery_method": "auto",
+            "scan_interval_minutes": 1440,
+        }
+    )
+
+    def broken_dispatcher(_scan_id: int) -> None:
+        raise RuntimeError("spawn failure")
+
+    executor = ScanExecutorService(
+        settings=test_settings,
+        website_repo=memory_repos["websites"],
+        source_config_repo=memory_repos["sources"],
+        content_repo=memory_repos["contents"],
+        scan_log_repo=memory_repos["scans"],
+        media_repo=memory_repos["media"],
+        activity_repo=memory_repos["activities"],
+        health_service=HealthService(settings=test_settings, db_checker=lambda: db_diagnostic_ok),
+        settings_service=SettingsService(
+            settings=test_settings,
+            settings_repo=memory_repos["settings"],
+            activity_repo=memory_repos["activities"],
+        ),
+        fetcher=SafeHttpFetcher(settings=test_settings),
+        dispatcher=broken_dispatcher,
+    )
+
+    with pytest.raises(RuntimeError, match="spawn failure"):
+        executor.enqueue_scan(site.id, trigger_type="manual", dispatch=True)
+
+    assert memory_repos["scans"].get_active_for_website(site.id) is None
+    latest, _total = memory_repos["scans"].list_for_website(site.id, page=1, page_size=5)
+    assert latest[0].status == "failed"
+    assert "Failed to dispatch scan worker" in (latest[0].error_message or "")
+
+
+def test_safe_http_fetcher_connection_pooling_and_close(test_settings: Settings) -> None:
+    from app.services.scanner.security import SafeHttpFetcher
+
+    fetcher = SafeHttpFetcher(settings=test_settings, resolver=lambda _h, _p: ["93.184.216.34"])
+    client1 = fetcher._get_pooled_client("example.com", 10.0)
+    client2 = fetcher._get_pooled_client("example.com", 10.0)
+    assert client1 is client2
+    assert len(fetcher._clients) == 1
+
+    fetcher._drop_pooled_clients("example.com")
+    assert len(fetcher._clients) == 0
+
+    client3 = fetcher._get_pooled_client("example.com", 10.0)
+    fetcher.close()
+    assert len(fetcher._clients) == 0
+    assert client3.is_closed

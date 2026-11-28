@@ -2,18 +2,18 @@
 
 Private, self-hosted, AI-powered Content Distribution and Editorial Automation System for a single administrator on aaPanel.
 
-> **Current Milestone:** Phase 2.1 — Website-Centric Architecture, Multi-Source Discovery, Classification & Batched Scanning (complete & verified; ready for review before Phase 3).
+> **Current Milestone:** Phase 3 — Gemini AI Engine, Social Profiles & SEO Content Approval (complete & verified; ready for review before Phase 4).
 
 ---
 
 ## Architecture Summary
 
 1. **Frontend (`frontend/`)** — Nuxt 4, TypeScript, Tailwind CSS v4, Nuxt UI v4, Pinia, Lucide Icons (`127.0.0.1:3100`).
-2. **Backend (`backend/`)** — Python 3.12, FastAPI, SQLAlchemy 2, PyMySQL, Alembic, Argon2id, Fernet, `psutil` (`127.0.0.1:8100`).
-3. **Background Execution (`backend/app/cli.py`, `backend/workers/`)** — Detached scan CLI & Cron scheduler (Phase 2); persistent worker (Phase 6).
+2. **Backend (`backend/`)** — Python 3.12, FastAPI, SQLAlchemy 2, PyMySQL, Alembic, `google-genai`, Jinja2 Sandboxed Prompts, Argon2id, Fernet, `psutil` (`127.0.0.1:8100`).
+3. **Background Execution (`backend/app/cli.py`, `backend/workers/`)** — Detached scan & AI generation workers (`run-scan`, `run-due-scans`, `run-ai-job`, `run-pending-ai-jobs`) and Cron scheduler.
 
 - **Database:** Existing aaPanel MySQL (`InnoDB`, `utf8mb4`).
-- **AI & Extraction:** Native Python extraction/summarization/keywords (Phase 2); Google Gemini API as sole AI provider (Phase 3+). No Redis, Celery, SQLite, or Docker requirement.
+- **AI & Extraction:** Native Python extraction/summarization/context digest; Google Gemini API (`google-genai`) as sole AI provider (Free-First quota protection, zero silent paid fallback). No Redis, Celery, SQLite, OpenClaw, or Docker requirement.
 
 ---
 

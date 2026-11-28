@@ -16,31 +16,78 @@ from app.core.exceptions import AppError
 from app.core.rate_limit import SlidingWindowRateLimiter
 from app.database import check_database_connection, get_session_factory
 from app.repositories.activity_log_repo import SQLAlchemyActivityLogRepository
+from app.repositories.ai_repo import SQLAlchemyAiRepository
+from app.repositories.category_repo import SQLAlchemyWebsiteCategoryRepository
 from app.repositories.content_repo import SQLAlchemyContentRepository
+from app.repositories.keyword_approval_repo import SQLAlchemyKeywordApprovalRepository
 from app.repositories.media_repo import SQLAlchemyMediaRepository
 from app.repositories.scan_log_repo import SQLAlchemyScanLogRepository
 from app.repositories.session_repo import SQLAlchemySessionRepository
 from app.repositories.settings_repo import SQLAlchemySettingsRepository
+from app.repositories.social_post_repo import SQLAlchemySocialPostRepository
+from app.repositories.social_profile_repo import SQLAlchemySocialProfileRepository
 from app.repositories.user_repo import SQLAlchemyUserRepository
 from app.repositories.website_repo import SQLAlchemyWebsiteRepository
 from app.repositories.website_source_repo import SQLAlchemyWebsiteSourceConfigRepository
+from app.services.ai.gemini import GeminiSdkProvider
+from app.services.ai.generation_service import AiGenerationService
 from app.services.auth_service import AuthService
+from app.services.content_approval_service import ContentApprovalService
 from app.services.monitoring.health_service import HealthService
 from app.services.scan_executor import ScanExecutorService
 from app.services.scanner.security import SafeHttpFetcher
 from app.services.settings_service import SettingsService
 
 
+def _build_ai_generation_service(db: Session, settings: Settings) -> AiGenerationService:
+    activity_repo = SQLAlchemyActivityLogRepository(db)
+    settings_repo = SQLAlchemySettingsRepository(db)
+    return AiGenerationService(
+        settings=settings,
+        ai_repo=SQLAlchemyAiRepository(db),
+        website_repo=SQLAlchemyWebsiteRepository(db),
+        category_repo=SQLAlchemyWebsiteCategoryRepository(db),
+        content_repo=SQLAlchemyContentRepository(db),
+        social_profile_repo=SQLAlchemySocialProfileRepository(db),
+        social_post_repo=SQLAlchemySocialPostRepository(db),
+        activity_repo=activity_repo,
+        health_service=HealthService(settings=settings),
+        settings_service=SettingsService(
+            settings=settings,
+            settings_repo=settings_repo,
+            activity_repo=activity_repo,
+        ),
+        provider_client=GeminiSdkProvider(),
+        keyword_approval_repo=SQLAlchemyKeywordApprovalRepository(db),
+    )
+
+
 def _build_scan_executor(db: Session, settings: Settings) -> ScanExecutorService:
     activity_repo = SQLAlchemyActivityLogRepository(db)
     settings_repo = SQLAlchemySettingsRepository(db)
+    website_repo = SQLAlchemyWebsiteRepository(db)
+    content_repo = SQLAlchemyContentRepository(db)
+    media_repo = SQLAlchemyMediaRepository(db)
+    ai_repo = SQLAlchemyAiRepository(db)
+    ai_gen_service = _build_ai_generation_service(db, settings)
+    approval_service = ContentApprovalService(
+        settings=settings,
+        keyword_approval_repo=SQLAlchemyKeywordApprovalRepository(db),
+        content_repo=content_repo,
+        website_repo=website_repo,
+        media_repo=media_repo,
+        activity_repo=activity_repo,
+        ai_repo=ai_repo,
+        provider_client=GeminiSdkProvider(),
+        ai_generation_service=ai_gen_service,
+    )
     return ScanExecutorService(
         settings=settings,
-        website_repo=SQLAlchemyWebsiteRepository(db),
+        website_repo=website_repo,
         source_config_repo=SQLAlchemyWebsiteSourceConfigRepository(db),
-        content_repo=SQLAlchemyContentRepository(db),
+        content_repo=content_repo,
         scan_log_repo=SQLAlchemyScanLogRepository(db),
-        media_repo=SQLAlchemyMediaRepository(db),
+        media_repo=media_repo,
         activity_repo=activity_repo,
         health_service=HealthService(settings=settings),
         settings_service=SettingsService(
@@ -49,6 +96,8 @@ def _build_scan_executor(db: Session, settings: Settings) -> ScanExecutorService
             activity_repo=activity_repo,
         ),
         fetcher=SafeHttpFetcher(settings=settings),
+        ai_generation_service=ai_gen_service,
+        approval_service=approval_service,
     )
 
 
@@ -233,6 +282,66 @@ def run_due_scans(*, executor: ScanExecutorService | None = None) -> int:
         db.close()
 
 
+def run_single_ai_job(
+    *,
+    job_id: int,
+    service: AiGenerationService | None = None,
+) -> int:
+    if service is not None:
+        result = service.execute_job(job_id)
+        print(
+            f"AI Job #{result.id}: status={result.status}, "
+            f"attempts={result.attempt_count}, error={result.error_message or 'none'}"
+        )
+        return 0 if result.status in {"completed", "partially_completed", "deferred"} else 1
+
+    settings = get_settings()
+    db = get_session_factory()()
+    try:
+        gen_service = _build_ai_generation_service(db, settings)
+        result = gen_service.execute_job(job_id)
+        print(
+            f"AI Job #{result.id}: status={result.status}, "
+            f"attempts={result.attempt_count}, error={result.error_message or 'none'}"
+        )
+        return 0 if result.status in {"completed", "partially_completed", "deferred"} else 1
+    except (AppError, SQLAlchemyError) as exc:
+        print(f"AI job execution error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+def run_pending_ai_jobs(*, limit: int = 10, service: AiGenerationService | None = None) -> int:
+    if service is not None:
+        results = service.run_pending_jobs(limit=limit)
+        print(f"Processed {len(results)} pending/deferred AI generation job(s).")
+        return 0
+
+    settings = get_settings()
+    db = get_session_factory()()
+    lock_name = "contenthub_ai_jobs_lock"
+    lock_acquired = False
+    try:
+        got = db.execute(text("SELECT GET_LOCK(:name, 0)"), {"name": lock_name}).scalar()
+        if got != 1:
+            print("Another AI worker already holds the MySQL advisory lock; exiting.")
+            return 0
+        lock_acquired = True
+        gen_service = _build_ai_generation_service(db, settings)
+        results = gen_service.run_pending_jobs(limit=limit)
+        print(f"Processed {len(results)} pending/deferred AI generation job(s).")
+        return 0
+    except SQLAlchemyError as exc:
+        print(f"AI job worker DB error ({type(exc).__name__}): {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if lock_acquired:
+            with contextlib.suppress(SQLAlchemyError):
+                db.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
@@ -266,6 +375,18 @@ def build_parser() -> argparse.ArgumentParser:
         "run-due-scans",
         help="Run due scheduled website scans sequentially under a MySQL advisory lock.",
     )
+
+    run_ai_parser = subparsers.add_parser(
+        "run-ai-job",
+        help="Claim and execute a single queued or deferred AI generation job by ID.",
+    )
+    run_ai_parser.add_argument("--job-id", type=int, required=True, help="AiGenerationJob ID.")
+
+    run_pending_ai = subparsers.add_parser(
+        "run-pending-ai-jobs",
+        help="Process queued and retryable deferred AI generation jobs under MySQL advisory lock.",
+    )
+    run_pending_ai.add_argument("--limit", type=int, default=10, help="Max jobs per pass.")
     return parser
 
 
@@ -285,6 +406,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_single_scan(scan_id=args.scan_id)
     if args.command == "run-due-scans":
         return run_due_scans()
+    if args.command == "run-ai-job":
+        return run_single_ai_job(job_id=args.job_id)
+    if args.command == "run-pending-ai-jobs":
+        return run_pending_ai_jobs(limit=args.limit)
 
     parser.print_help()
     return 1

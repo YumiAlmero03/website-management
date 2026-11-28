@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import math
 import subprocess
 import sys
@@ -7,9 +8,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.config import Settings
+if TYPE_CHECKING:
+    from app.services.ai.generation_service import AiGenerationService
+    from app.services.content_approval_service import ContentApprovalService
+
+from app.config import BACKEND_ROOT, Settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
 from app.models.base import ensure_utc, utc_now, utc_now_naive
 from app.models.website import Website
@@ -54,14 +59,25 @@ ScanDispatcher = Callable[[int], None]
 
 def default_subprocess_dispatcher(scan_id: int) -> None:
     """Spawn a detached worker process via `python -m app.cli run-scan --scan-id <id>`."""
-    backend_dir = Settings().resolved_base_dir
-    subprocess.Popen(
-        [sys.executable, "-m", "app.cli", "run-scan", "--scan-id", str(scan_id)],
-        cwd=str(backend_dir),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    cfg = Settings()
+    log_file = None
+    with contextlib.suppress(OSError):
+        log_dir = cfg.resolved_storage_root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = (log_dir / "scanner-worker.log").open("ab")
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "app.cli", "run-scan", "--scan-id", str(scan_id)],
+            cwd=str(BACKEND_ROOT),
+            stdout=log_file if log_file is not None else subprocess.DEVNULL,
+            stderr=log_file if log_file is not None else subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    finally:
+        if log_file is not None:
+            with contextlib.suppress(OSError):
+                log_file.close()
 
 
 @dataclass(frozen=True)
@@ -93,6 +109,8 @@ class ScanExecutorService:
         settings_service: SettingsService,
         fetcher: SafeHttpFetcher,
         dispatcher: ScanDispatcher | None = None,
+        ai_generation_service: AiGenerationService | None = None,
+        approval_service: ContentApprovalService | None = None,
     ) -> None:
         self.settings = settings
         self.website_repo = website_repo
@@ -105,6 +123,8 @@ class ScanExecutorService:
         self.settings_service = settings_service
         self.fetcher = fetcher
         self.dispatcher = dispatcher or default_subprocess_dispatcher
+        self.ai_generation_service = ai_generation_service
+        self.approval_service = approval_service
 
     def _to_scan_response(
         self, row: WebsiteScanLog, *, site_name: str | None = None
@@ -276,7 +296,18 @@ class ScanExecutorService:
             ip_address=ip_address,
         )
         if dispatch:
-            self.dispatcher(scan.id)
+            try:
+                self.dispatcher(scan.id)
+            except Exception as exc:
+                self.scan_log_repo.update(
+                    scan.id,
+                    {
+                        "status": "failed",
+                        "completed_at": utc_now_naive(),
+                        "error_message": f"Failed to dispatch scan worker: {exc}"[:500],
+                    },
+                )
+                raise
         return self._to_scan_response(scan, site_name=site.name)
 
     def retry_scan(
@@ -503,6 +534,7 @@ class ScanExecutorService:
                     inline_candidates=inline_candidates,
                     new_content_ids=new_content_ids,
                 )
+                self._sync_progress_counts(scan_id=scan_id, site_id=site.id)
                 self.scan_log_repo.update(
                     scan_id,
                     {
@@ -519,6 +551,7 @@ class ScanExecutorService:
                     site=site,
                     url_rules=url_rules,
                 )
+                self._sync_progress_counts(scan_id=scan_id, site_id=site.id)
             elif scan_mode == "retry_failed":
                 self._queue_failed_for_retry(
                     scan_id=scan_id,
@@ -526,6 +559,7 @@ class ScanExecutorService:
                     url_rules=url_rules,
                     limit=run_limit,
                 )
+                self._sync_progress_counts(scan_id=scan_id, site_id=site.id)
         except DiscoveryError as exc:
             self._finalize_failed(
                 scan_id=scan_id,
@@ -542,26 +576,31 @@ class ScanExecutorService:
             return self.get_scan(scan_id)
 
         paused_mid_run = False
-        if scan_mode != "discover_only":
-            paused_mid_run = self._extract_pending_in_batches(
+        try:
+            if scan_mode != "discover_only":
+                paused_mid_run = self._extract_pending_in_batches(
+                    scan_id=scan_id,
+                    site=site,
+                    url_rules=url_rules,
+                    robots=robots,
+                    batch_size=batch_size,
+                    run_limit=run_limit,
+                    inline_candidates=inline_candidates,
+                    new_content_ids=new_content_ids,
+                )
+
+            return self._finalize_scan_log(
                 scan_id=scan_id,
                 site=site,
-                url_rules=url_rules,
-                robots=robots,
-                batch_size=batch_size,
-                run_limit=run_limit,
-                inline_candidates=inline_candidates,
-                new_content_ids=new_content_ids,
+                scan_mode=scan_mode,
+                started_monotonic=started_monotonic,
+                discovery_output=discovery_output,
+                paused_mid_run=paused_mid_run,
             )
-
-        return self._finalize_scan_log(
-            scan_id=scan_id,
-            site=site,
-            scan_mode=scan_mode,
-            started_monotonic=started_monotonic,
-            discovery_output=discovery_output,
-            paused_mid_run=paused_mid_run,
-        )
+        finally:
+            if hasattr(self.fetcher, "close"):
+                with contextlib.suppress(Exception):
+                    self.fetcher.close()
 
     def _persist_source_records(self, website_id: int, records: list[EndpointFetchRecord]) -> None:
         now = utc_now_naive()
@@ -719,7 +758,7 @@ class ScanExecutorService:
                         "word_count": 0,
                         "extraction_status": "pending",
                         "status": "discovered",
-                        "is_historical_baseline": False,
+                        "is_historical_baseline": not site.initial_scan_completed,
                         "published_at": (
                             cand.published_at.replace(tzinfo=None) if cand.published_at else None
                         ),
@@ -759,6 +798,12 @@ class ScanExecutorService:
                     item_status = "unchanged"
                 else:
                     item_status = "pending"
+
+            if self.approval_service is not None:
+                with contextlib.suppress(Exception):
+                    self.approval_service.sync_discovered_content(
+                        content=content_row, website=site
+                    )
 
             self.scan_log_repo.upsert_scan_item(
                 scan_log_id=scan_id,
@@ -902,6 +947,7 @@ class ScanExecutorService:
                 break
 
             batch_index += 1
+            processed_in_batch = 0
             for item in batch:
                 self.scan_log_repo.update(
                     scan_id,
@@ -927,8 +973,12 @@ class ScanExecutorService:
                     new_content_ids=new_content_ids,
                 )
                 processed_this_run += 1
+                processed_in_batch += 1
+                if processed_in_batch % 5 == 0:
+                    self._sync_progress_counts(scan_id=scan_id, site_id=site.id)
 
-            self._sync_progress_counts(scan_id=scan_id, site_id=site.id)
+            if processed_in_batch % 5 != 0:
+                self._sync_progress_counts(scan_id=scan_id, site_id=site.id)
 
         return paused_by_guardian
 
@@ -1158,6 +1208,19 @@ class ScanExecutorService:
                 "processed_at": now_naive,
             },
         )
+        # Never auto-approve or auto-trigger AI generation from scan extraction.
+        # Eligible items enter Pending Review / Needs Re-review safely.
+        if self.approval_service is not None:
+            with contextlib.suppress(Exception):
+                self.approval_service.sync_extracted_content(
+                    content=content_row,
+                    website=site,
+                    extracted_headings=extracted.headings,
+                    extracted_images=extracted.images,
+                    featured_image_url=extracted.featured_image_url,
+                    featured_image_alt=extracted.featured_image_alt,
+                    changed=changed,
+                )
 
     def _record_item_failure_or_exclusion(
         self,
@@ -1271,7 +1334,11 @@ class ScanExecutorService:
                 "homepage_count": content_stats["homepage_count"],
                 "page_count": content_stats["page_count"],
                 "blog_post_count": content_stats["blog_post_count"],
-                "other_count": (content_stats["blog_index_count"] + content_stats["other_count"]),
+                "other_count": (
+                    content_stats["blog_index_count"]
+                    + content_stats.get("game_page_count", 0)
+                    + content_stats["other_count"]
+                ),
                 "heartbeat_at": utc_now_naive(),
             },
         )

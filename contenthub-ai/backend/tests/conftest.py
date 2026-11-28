@@ -12,17 +12,23 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.core.dependencies import (
     get_activity_log_repo,
+    get_ai_job_dispatcher,
+    get_ai_provider_client,
+    get_ai_repo,
     get_app_settings,
     get_category_repo,
     get_content_repo,
     get_db_health_checker,
     get_http_fetcher,
+    get_keyword_approval_repo,
     get_login_rate_limiter,
     get_media_repo,
     get_scan_dispatcher,
     get_scan_log_repo,
     get_session_repo,
     get_settings_repo,
+    get_social_post_repo,
+    get_social_profile_repo,
     get_user_repo,
     get_website_repo,
     get_website_source_repo,
@@ -694,6 +700,7 @@ class InMemoryContentRepository:
             "total_extracted": sum(1 for r in non_excl if r.extraction_status == "extracted"),
             "homepage_count": sum(1 for r in non_excl if r.content_type == "homepage"),
             "page_count": sum(1 for r in non_excl if r.content_type == "page"),
+            "game_page_count": sum(1 for r in non_excl if r.content_type == "game_page"),
             "blog_post_count": sum(1 for r in non_excl if r.content_type == "blog_post"),
             "blog_index_count": sum(1 for r in non_excl if r.content_type == "blog_index"),
             "category_count": sum(1 for r in non_excl if r.content_type == "category"),
@@ -744,10 +751,12 @@ class InMemoryContentRepository:
         rows.sort(key=lambda r: r.id)
         return rows[:limit]
 
-    def list_for_website(self, website_id: int) -> list[WebsiteContent]:
+    def list_for_website(
+        self, website_id: int, *, limit: int | None = None
+    ) -> list[WebsiteContent]:
         rows = [r for r in self._items.values() if r.website_id == website_id]
         rows.sort(key=lambda r: r.id)
-        return rows
+        return rows[:limit] if limit is not None else rows
 
     def count_by_website(self, website_id: int) -> int:
         return sum(1 for r in self._items.values() if r.website_id == website_id)
@@ -1212,12 +1221,25 @@ def test_settings(tmp_path: Any) -> Settings:
         db_password="test-only-password",
         storage_root=str(storage_dir),
         scanner_crawl_delay_seconds=0.0,
+        resource_cpu_warning_percent=99.0,
+        resource_cpu_critical_percent=100.0,
+        resource_ram_warning_percent=99.0,
+        resource_load_avg_threshold=128.0,
     )
 
 
 @pytest.fixture()
 def memory_repos() -> dict[str, Any]:
+    from tests.ai_memory_fakes import (
+        FakeGeminiProviderClient,
+        InMemoryAiRepository,
+        InMemorySocialPostRepository,
+        InMemorySocialProfileRepository,
+    )
+    from tests.keyword_approval_fakes import InMemoryKeywordApprovalRepository
+
     website_repo = InMemoryWebsiteRepository()
+    content_repo = InMemoryContentRepository(website_repo)
     return {
         "users": InMemoryUserRepository(),
         "sessions": InMemorySessionRepository(),
@@ -1226,11 +1248,17 @@ def memory_repos() -> dict[str, Any]:
         "categories": InMemoryWebsiteCategoryRepository(),
         "websites": website_repo,
         "sources": InMemoryWebsiteSourceConfigRepository(),
-        "contents": InMemoryContentRepository(website_repo),
+        "contents": content_repo,
+        "keyword_approvals": InMemoryKeywordApprovalRepository(content_repo),
         "scans": InMemoryScanLogRepository(website_repo),
         "media": InMemoryMediaRepository(),
+        "social_profiles": InMemorySocialProfileRepository(),
+        "ai": InMemoryAiRepository(),
+        "social_posts": InMemorySocialPostRepository(),
+        "ai_client": FakeGeminiProviderClient(),
         "rate_limiter": SlidingWindowRateLimiter(max_attempts=3, window_seconds=300),
         "dispatched_scans": [],
+        "dispatched_ai_jobs": [],
     }
 
 
@@ -1279,6 +1307,18 @@ def app(
     application.dependency_overrides[get_content_repo] = lambda: memory_repos["contents"]
     application.dependency_overrides[get_scan_log_repo] = lambda: memory_repos["scans"]
     application.dependency_overrides[get_media_repo] = lambda: memory_repos["media"]
+    application.dependency_overrides[get_social_profile_repo] = lambda: memory_repos[
+        "social_profiles"
+    ]
+    application.dependency_overrides[get_ai_repo] = lambda: memory_repos["ai"]
+    application.dependency_overrides[get_social_post_repo] = lambda: memory_repos["social_posts"]
+    application.dependency_overrides[get_keyword_approval_repo] = lambda: memory_repos[
+        "keyword_approvals"
+    ]
+    application.dependency_overrides[get_ai_provider_client] = lambda: memory_repos["ai_client"]
+    application.dependency_overrides[get_ai_job_dispatcher] = lambda: (
+        lambda job_id: memory_repos["dispatched_ai_jobs"].append(job_id)
+    )
     application.dependency_overrides[get_login_rate_limiter] = lambda: memory_repos["rate_limiter"]
     application.dependency_overrides[get_db_health_checker] = lambda: (lambda: db_diagnostic_ok)
     application.dependency_overrides[get_scan_dispatcher] = lambda: (
