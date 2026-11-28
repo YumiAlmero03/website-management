@@ -170,6 +170,7 @@ class WebsiteService:
             llms_url=site.llms_url,
             api_endpoint=site.api_endpoint,
             gsc_property_url=site.gsc_property_url,
+            gsc_property_verified_at=ensure_utc(site.gsc_property_verified_at),
             gsc_service_account_configured=bool(site.encrypted_gsc_service_account_json),
             article_url_patterns=list(site.article_url_patterns or []),
             excluded_url_patterns=list(site.excluded_url_patterns or []),
@@ -538,7 +539,10 @@ class WebsiteService:
 
         if "gsc_property_url" in raw:
             value = str(raw["gsc_property_url"] or "").strip()
-            updates["gsc_property_url"] = value or None
+            property_url = value or None
+            updates["gsc_property_url"] = property_url
+            if property_url != existing.gsc_property_url:
+                updates["gsc_property_verified_at"] = None
 
         for url_field in ("rss_url", "sitemap_url", "llms_url", "api_endpoint"):
             if url_field in raw:
@@ -714,7 +718,10 @@ class WebsiteService:
         ciphertext = encrypt_secret(raw_json, self.settings.app_encryption_key)
         updated = self.website_repo.update(
             website_id,
-            {"encrypted_gsc_service_account_json": ciphertext},
+            {
+                "encrypted_gsc_service_account_json": ciphertext,
+                "gsc_property_verified_at": None,
+            },
         )
         assert updated is not None
         self.activity_repo.create(
@@ -741,7 +748,10 @@ class WebsiteService:
             raise NotFoundError(f"Website #{website_id} not found.")
         updated = self.website_repo.update(
             website_id,
-            {"encrypted_gsc_service_account_json": None},
+            {
+                "encrypted_gsc_service_account_json": None,
+                "gsc_property_verified_at": None,
+            },
         )
         assert updated is not None
         self.activity_repo.create(

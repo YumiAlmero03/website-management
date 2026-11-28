@@ -345,6 +345,7 @@ export interface Website {
   llms_url: string | null
   api_endpoint: string | null
   gsc_property_url: string | null
+  gsc_property_verified_at: string | null
   gsc_service_account_configured: boolean
   article_url_patterns: string[]
   excluded_url_patterns: string[]
@@ -543,6 +544,13 @@ export interface IndexingStatus {
   skipped: number
   ready: number
   failed: number
+}
+
+export interface IndexingAccountTestResult {
+  connected: boolean
+  account_email: string
+  property_url: string
+  verified_at: string
 }
 
 export interface ContentDetail extends ContentListItem {

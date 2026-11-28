@@ -17,6 +17,7 @@ import {
 import type {
   ContentListItem,
   ContentListResponse,
+  IndexingAccountTestResult,
   IndexingStatus,
   ScanItem,
   ScanItemListResponse,
@@ -90,6 +91,8 @@ const indexingStatus = ref<IndexingStatus>({
   failed: 0,
 })
 const indexingStatusError = ref<string | null>(null)
+const testingGscAccount = ref(false)
+const gscAccountTestResult = ref<IndexingAccountTestResult | null>(null)
 let indexingPoll: ReturnType<typeof setInterval> | null = null
 
 const connectivityResult = ref<WebsiteConnectivity | null>(null)
@@ -169,6 +172,21 @@ const canResumeScan = computed(
 )
 const indexingInProgress = computed(
   () => indexingStatus.value.state === 'queued' || indexingStatus.value.state === 'processing',
+)
+const gscPropertySaved = computed(
+  () => Boolean(
+    website.value?.gsc_property_url
+    && settingsForm.value.gsc_property_url.trim() === website.value.gsc_property_url,
+  ),
+)
+const canTestGscAccount = computed(
+  () => Boolean(website.value?.gsc_service_account_configured && gscPropertySaved.value),
+)
+const indexingSetupVerified = computed(
+  () => Boolean(
+    canTestGscAccount.value
+    && website.value?.gsc_property_verified_at,
+  ),
 )
 const indexingButtonLabel = computed(() => {
   if (indexingInProgress.value) {
@@ -271,6 +289,34 @@ async function runIndexing() {
       description: extractErrorMessage(err, 'An indexing job could not be started.'),
       color: 'error',
     })
+  }
+}
+
+async function testGscAccount() {
+  testingGscAccount.value = true
+  gscAccountTestResult.value = null
+  try {
+    const result = await request<IndexingAccountTestResult>(
+      `/api/v1/indexing/websites/${websiteId.value}/test-account`,
+      { method: 'POST' },
+    )
+    gscAccountTestResult.value = result
+    if (website.value) website.value.gsc_property_verified_at = result.verified_at
+    toast.add({
+      title: 'Search Console account verified',
+      description: `${result.account_email} can access ${result.property_url}.`,
+      color: 'success',
+    })
+  }
+  catch (err) {
+    toast.add({
+      title: 'Search Console account test failed',
+      description: extractErrorMessage(err, 'Could not verify access to this Search Console property.'),
+      color: 'error',
+    })
+  }
+  finally {
+    testingGscAccount.value = false
   }
 }
 
@@ -756,6 +802,7 @@ async function saveWebsiteSettings() {
       body: payload,
     })
     website.value = updated
+    gscAccountTestResult.value = null
     syncSettingsForm(updated)
     toast.add({ title: 'Website & brand settings saved', color: 'success' })
     sectionStates.delete('scanner')
@@ -1758,7 +1805,7 @@ onUnmounted(() => {
               color="primary"
               size="sm"
               :loading="indexingInProgress"
-              :disabled="indexingInProgress"
+              :disabled="indexingInProgress || !indexingSetupVerified"
               :aria-label="indexingStatus.state === 'completed' ? 'Run the next eligible indexing batch' : undefined"
               @click="runIndexing"
             >
@@ -1794,6 +1841,17 @@ onUnmounted(() => {
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-3">
+            <UButton
+              type="button"
+              color="neutral"
+              variant="outline"
+              size="sm"
+              :loading="testingGscAccount"
+              :disabled="testingGscAccount || !canTestGscAccount || indexingInProgress"
+              @click="testGscAccount"
+            >
+              Test Account
+            </UButton>
             <label class="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-3 py-2 font-medium hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
               <span>{{ uploadingGscServiceAccount ? 'Uploading...' : 'Upload Service Account JSON' }}</span>
               <input
@@ -1823,6 +1881,36 @@ onUnmounted(() => {
               Remove Key
             </UButton>
           </div>
+          <p
+            v-if="gscAccountTestResult && indexingSetupVerified"
+            class="text-emerald-700 dark:text-emerald-300"
+          >
+            Verified {{ gscAccountTestResult.account_email }} for {{ gscAccountTestResult.property_url }}.
+          </p>
+          <p
+            v-else-if="indexingSetupVerified && website.gsc_property_verified_at"
+            class="text-emerald-700 dark:text-emerald-300"
+          >
+            Search Console access verified {{ formatDateTime(website.gsc_property_verified_at) }}.
+          </p>
+          <p
+            v-else-if="!website.gsc_service_account_configured"
+            class="text-amber-700 dark:text-amber-300"
+          >
+            Upload a service-account key before testing access.
+          </p>
+          <p
+            v-else-if="!gscPropertySaved"
+            class="text-amber-700 dark:text-amber-300"
+          >
+            Save the Search Console property before testing access.
+          </p>
+          <p
+            v-else
+            class="text-amber-700 dark:text-amber-300"
+          >
+            Test the account before running indexing. The test only lists properties available to the account.
+          </p>
           <p class="text-[11px] text-slate-500">
             Add the service account's email as a user of the matching Search Console property before running indexing.
           </p>

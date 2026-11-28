@@ -189,6 +189,7 @@ class WebsiteResponse(BaseModel):
     llms_url: str | None = None
     api_endpoint: str | None = None
     gsc_property_url: str | None = None
+    gsc_property_verified_at: datetime | None = None
     gsc_service_account_configured: bool = False
     article_url_patterns: list[str] = Field(default_factory=list)
     excluded_url_patterns: list[str] = Field(default_factory=list)

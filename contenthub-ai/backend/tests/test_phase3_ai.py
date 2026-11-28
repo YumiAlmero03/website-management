@@ -369,8 +369,11 @@ def test_localai_prompt_log_preserves_usage_and_redacts_credentials(
     assert provider.status_code == 201, provider.text
 
     reply = json.dumps({
-        "focus_keyphrase": content.title,
-        "secondary_keywords": [],
+        "secondary_keywords": [
+            "new   promo",
+            "Tournament strategy tips",
+            "Tournament strategy tips",
+        ],
         "metadata": api_key,
         "access_token": "synthetic-response-token",
     })
@@ -392,6 +395,8 @@ def test_localai_prompt_log_preserves_usage_and_redacts_credentials(
     refined = client.post(refine_url, headers=headers, json={})
     assert refined.status_code == 200, refined.text
     assert refined.json()["suggestion_source"] == "localai_assisted"
+    assert refined.json()["focus_keyphrase"] == "New Promo"
+    assert refined.json()["secondary_keywords"] == ["Tournament strategy tips"]
     entry = client.get("/api/v1/ai/history", params={"model_search": "QWEN"}).json()["items"][0]
     assert entry["provider_type"] == "localai"
     assert entry["provider_name"] == "LocalAI Test"
@@ -401,7 +406,11 @@ def test_localai_prompt_log_preserves_usage_and_redacts_credentials(
     assert log_row is not None and log_row.encrypted_prompt_exchange
     assert content.title not in log_row.encrypted_prompt_exchange
     detail = client.get(f"/api/v1/ai/prompt-logs/{entry['id']}").json()
-    assert content.title in detail["user_prompt"]
+    assert content.url in detail["user_prompt"]
+    assert "New Promo" in detail["user_prompt"]
+    assert content.title not in detail["user_prompt"]
+    assert "Official announcement" not in detail["user_prompt"]
+    assert "Players across Manila" not in detail["user_prompt"]
     assert api_key not in detail["response"]
     assert "synthetic-response-token" not in detail["response"]
     assert "hidden text" not in detail["response"]

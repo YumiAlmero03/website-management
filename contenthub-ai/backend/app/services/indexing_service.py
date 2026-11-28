@@ -29,6 +29,7 @@ from app.services.monitoring.health_service import HealthService
 
 class IndexingService:
     MAX_URLS = 10
+    SEARCH_CONSOLE_SITES_URL = "https://www.googleapis.com/webmasters/v3/sites"
 
     def __init__(
         self,
@@ -114,6 +115,72 @@ class IndexingService:
                 with contextlib.suppress(OSError):
                     log_file.close()
 
+    def _website_service_account_json(self, website: Website) -> str | None:
+        encrypted = getattr(website, "encrypted_gsc_service_account_json", None)
+        if encrypted:
+            return decrypt_secret(encrypted, self.settings.app_encryption_key)
+        return self.settings.google_service_account_json.strip() or None
+
+    def test_google_account(self, website_id: int) -> dict[str, Any]:
+        website = self.db.get(Website, website_id)
+        if website is None:
+            raise NotFoundError(f"Website #{website_id} not found.")
+        property_url = (website.gsc_property_url or "").strip()
+        if not property_url:
+            raise ValidationAppError(
+                "Configure and save the authorized Search Console property before testing."
+            )
+        service_account_json = self._website_service_account_json(website)
+        if not service_account_json:
+            raise ValidationAppError(
+                "Upload a Google service-account JSON file in Website Settings before testing."
+            )
+
+        try:
+            account = json.loads(service_account_json)
+            if not isinstance(account, dict):
+                raise ValueError("Service-account JSON must be an object.")
+            account_email = str(account.get("client_email") or "").strip()
+            if not account_email:
+                raise ValueError("Service-account email is missing.")
+            token = self._get_access_token(service_account_json)
+            response = httpx.get(
+                self.SEARCH_CONSOLE_SITES_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise ValidationAppError(
+                f"Google rejected the account test (HTTP {exc.response.status_code})."
+            ) from exc
+        except (httpx.RequestError, RuntimeError, TypeError, ValueError) as exc:
+            raise ValidationAppError(
+                "Could not verify the Google service account. "
+                "Check the key and network, then retry."
+            ) from exc
+
+        entries = payload.get("siteEntry", []) if isinstance(payload, dict) else []
+        if not isinstance(entries, list) or not any(
+            isinstance(entry, dict) and entry.get("siteUrl") == property_url
+            for entry in entries
+        ):
+            raise ValidationAppError(
+                "Google authentication succeeded, but this account cannot access the configured "
+                "Search Console property. Add the service-account email as a property user."
+            )
+
+        verified_at = utc_now_naive()
+        website.gsc_property_verified_at = verified_at
+        self.db.commit()
+        return {
+            "connected": True,
+            "account_email": account_email,
+            "property_url": property_url,
+            "verified_at": verified_at,
+        }
+
     def start(self, website_id: int) -> dict[str, Any]:
         website = self.db.get(Website, website_id)
         if website is None:
@@ -128,6 +195,11 @@ class IndexingService:
         ):
             raise ValidationAppError(
                 "Upload a Google service-account JSON file in Website Settings before indexing."
+            )
+        if not website.gsc_property_verified_at:
+            raise ValidationAppError(
+                "Test the Google service account against this Search Console property "
+                "before indexing."
             )
         active = self.db.execute(
             select(IndexingJob)
@@ -319,7 +391,7 @@ class IndexingService:
         header = {"alg": "RS256", "typ": "JWT"}
         payload = {
             "iss": client_email,
-            "scope": "https://www.googleapis.com/auth/webmasters",
+            "scope": "https://www.googleapis.com/auth/webmasters.readonly",
             "aud": token_uri,
             "iat": now,
             "exp": now + 3600,
@@ -449,14 +521,7 @@ class IndexingService:
             technical = self._technical_check(url)
             inspection: dict[str, Any] | None = None
             try:
-                service_account_json = (
-                    decrypt_secret(
-                        website.encrypted_gsc_service_account_json,
-                        self.settings.app_encryption_key,
-                    )
-                    if website.encrypted_gsc_service_account_json
-                    else None
-                )
+                service_account_json = self._website_service_account_json(website)
                 inspection = self._inspect_url(
                     website.gsc_property_url or "",
                     url,

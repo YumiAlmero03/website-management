@@ -7,11 +7,23 @@ from app.core.dependencies import (
     require_admin,
     require_csrf,
 )
-from app.schemas.indexing import IndexingStatusResponse
+from app.schemas.indexing import IndexingAccountTestResponse, IndexingStatusResponse
 from app.services.auth_service import AuthenticatedSession
 from app.services.indexing_service import IndexingService
 
 router = APIRouter(prefix="/indexing", tags=["Google Indexing"])
+
+
+@router.post(
+    "/websites/{website_id}/test-account",
+    response_model=IndexingAccountTestResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def test_google_account(
+    website_id: int,
+    service: Annotated[IndexingService, Depends(get_indexing_service)],
+) -> IndexingAccountTestResponse:
+    return IndexingAccountTestResponse(**service.test_google_account(website_id))
 
 
 @router.post("/websites/{website_id}/run", response_model=IndexingStatusResponse)

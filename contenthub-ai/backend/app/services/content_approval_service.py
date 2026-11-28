@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import time
 from typing import TYPE_CHECKING, Any
@@ -1374,36 +1373,19 @@ class ContentApprovalService:
             secondary = python_result.secondary_keywords
             suggestion_source = "template_generated"
         else:
-            candidates = [python_result.focus_keyphrase, *python_result.secondary_keywords]
-            compact_context = json.dumps(
-                {
-                    "website_name": site.name,
-                    "brand_name": site.brand_name,
-                    "content_type": content.content_type,
-                    "meta_title": content.title,
-                    "meta_description": content.meta_description,
-                    "h1": content.h1_text,
-                    "relevant_image_alts": [
-                        str(img.get("alt") or "")
-                        for img in (python_result.keyword_evidence or [])
-                        if isinstance(img, dict) and img.get("alt")
-                    ],
-                    "url_slug": content.canonical_url,
-                    "top_candidates": candidates[:12],
-                    "supporting_excerpt": (
-                        content.markdown_content or content.extracted_content or ""
-                    )[:900],
-                },
-                ensure_ascii=False,
+            page_link = (content.canonical_url or content.url or "").strip()
+            focus = python_result.focus_keyphrase
+            user_prompt = (
+                f"Get secondary keywords in this link: {page_link}. "
+                f"Do not include the main keyword: {focus}."
             )
             sys_inst = (
-                "Select one primary focus keyphrase and relevant secondary keywords "
-                "using only supplied evidence and candidates. Preserve the page language. "
-                "Do not invent facts or rankings. Avoid duplicates. "
-                'Return JSON only matching {"focus_keyphrase": "...", '
-                '"secondary_keywords": ["..."]}.'
+                "Suggest secondary keywords using only the page link in the user message. "
+                "Do not use page content, excerpts, titles, or other source text. "
+                "Exclude the supplied main keyword from the secondary keyword list. "
+                "Preserve the page language and avoid duplicates. "
+                'Return JSON only matching {"secondary_keywords": ["..."]}.'
             )
-            focus = python_result.focus_keyphrase
             secondary = python_result.secondary_keywords
             suggestion_source = "python_only"
             exchange = None
@@ -1417,31 +1399,14 @@ class ContentApprovalService:
                     api_key=api_key,
                     model_name=provider.selected_model,
                     system_instruction=sys_inst,
-                    user_prompt=compact_context,
+                    user_prompt=user_prompt,
                     temperature=provider.default_temperature,
                     max_output_tokens=provider.max_output_tokens,
                     timeout_seconds=provider.request_timeout_seconds,
                     max_retries=provider.max_retry_attempts,
                 )
-                supported = {
-                    normalize_keyphrase(candidate)
-                    for candidate in candidates
-                    if normalize_keyphrase(candidate)
-                }
-                ai_focus = normalize_keyphrase(parsed.focus_keyphrase)
-                if ai_focus in supported or any(
-                    fuzz.ratio(ai_focus, candidate) >= 82 for candidate in supported
-                ):
-                    focus = parsed.focus_keyphrase
                 secondary = _clean_string_list(
-                    [
-                        item for item in parsed.secondary_keywords
-                        if normalize_keyphrase(item) in supported
-                        or any(
-                            fuzz.ratio(normalize_keyphrase(item), candidate) >= 82
-                            for candidate in supported
-                        )
-                    ],
+                    parsed.secondary_keywords,
                     exclude_norm=normalize_keyphrase(focus),
                     limit=12,
                 )
@@ -1474,13 +1439,13 @@ class ContentApprovalService:
                     redact_ai_log_text(error_message, api_key)[:500] if error_message else None
                 ),
                 **resolve_usage_fields(
-                    estimated_input_tokens=estimate_tokens_from_text(sys_inst + compact_context),
+                    estimated_input_tokens=estimate_tokens_from_text(sys_inst + user_prompt),
                     provider_result=exchange,
                 ),
                 "encrypted_prompt_exchange": encrypt_prompt_exchange(
                     self.settings.app_encryption_key,
                     system_instruction=sys_inst,
-                    user_prompt=compact_context,
+                    user_prompt=user_prompt,
                     response=(exchange.raw_text or None) if exchange else None,
                     api_key=api_key,
                 ),

@@ -16,7 +16,7 @@ from app.services.ai.provider import (
 
 
 class LocalAiKeywordOutput(BaseModel):
-    focus_keyphrase: str = Field(min_length=2, max_length=120)
+    focus_keyphrase: str = Field(default="", max_length=120)
     secondary_keywords: list[str] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="before")

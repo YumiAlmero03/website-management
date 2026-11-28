@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy.dialects import mysql
 
 from app.config import Settings
+from app.core.dependencies import get_indexing_service
 from app.core.exceptions import ValidationAppError
 from app.models.indexing import IndexingJob
 from app.services.indexing_service import IndexingService
@@ -23,6 +24,7 @@ def test_start_builds_mysql_compatible_query_and_dispatches_job(
     site = SimpleNamespace(
         id=1,
         gsc_property_url="https://example.com/",
+        gsc_property_verified_at=datetime(2026, 11, 28),
         encrypted_gsc_service_account_json="encrypted-test-key",
     )
     content = SimpleNamespace(
@@ -86,6 +88,7 @@ def test_start_restores_content_if_worker_cannot_be_launched(
     db.get.return_value = SimpleNamespace(
         id=1,
         gsc_property_url="https://example.com/",
+        gsc_property_verified_at=datetime(2026, 11, 28),
         encrypted_gsc_service_account_json="encrypted-test-key",
     )
     db.execute.side_effect = [
@@ -160,6 +163,161 @@ def test_start_requires_service_account_credentials(test_settings: Settings) -> 
     db.execute.assert_not_called()
 
 
+def test_start_requires_successful_google_account_test(test_settings: Settings) -> None:
+    db = Mock(spec=["get", "execute"])
+    db.get.return_value = SimpleNamespace(
+        id=1,
+        gsc_property_url="https://example.com/",
+        gsc_property_verified_at=None,
+        encrypted_gsc_service_account_json="encrypted-test-key",
+    )
+    service = IndexingService(
+        db=db,
+        settings=test_settings,
+        health_service=Mock(),
+        dispatcher=Mock(),
+    )
+
+    try:
+        service.start(1)
+    except ValidationAppError as exc:
+        assert "Test the Google service account" in exc.detail
+    else:
+        raise AssertionError("Expected indexing to require a successful account test.")
+
+    db.execute.assert_not_called()
+
+
+def test_test_google_account_confirms_property_access_with_mocked_responses(
+    test_settings: Settings,
+    monkeypatch: Any,
+) -> None:
+    site = SimpleNamespace(
+        id=1,
+        gsc_property_url="https://example.com/",
+        gsc_property_verified_at=None,
+        encrypted_gsc_service_account_json="encrypted-test-key",
+    )
+    db = Mock(spec=["get", "commit"])
+    db.get.return_value = site
+    service = IndexingService(db=db, settings=test_settings, health_service=Mock())
+    monkeypatch.setattr(
+        service,
+        "_website_service_account_json",
+        lambda _website: json.dumps({
+            "type": "service_account",
+            "client_email": "indexer@example-project.iam.gserviceaccount.com",
+        }),
+    )
+    monkeypatch.setattr(service, "_get_access_token", lambda _credentials: "mock-index-token")
+    response = Mock()
+    response.json.return_value = {
+        "siteEntry": [
+            {"siteUrl": "https://example.com/"},
+            {"siteUrl": "sc-domain:other.example"},
+        ],
+    }
+    google_requests: list[tuple[str, dict[str, str], int]] = []
+
+    def fake_get(
+        url: str,
+        *,
+        headers: dict[str, str],
+        timeout: int,
+    ) -> Mock:
+        google_requests.append((url, headers, timeout))
+        return response
+
+    monkeypatch.setattr("app.services.indexing_service.httpx.get", fake_get)
+
+    result = service.test_google_account(1)
+
+    assert result["connected"] is True
+    assert result["account_email"] == "indexer@example-project.iam.gserviceaccount.com"
+    assert result["property_url"] == "https://example.com/"
+    assert result["verified_at"] == site.gsc_property_verified_at
+    assert google_requests == [
+        (
+            "https://www.googleapis.com/webmasters/v3/sites",
+            {"Authorization": "Bearer mock-index-token"},
+            20,
+        ),
+    ]
+    db.commit.assert_called_once_with()
+
+
+def test_test_google_account_rejects_property_not_accessible(
+    test_settings: Settings,
+    monkeypatch: Any,
+) -> None:
+    site = SimpleNamespace(
+        id=1,
+        gsc_property_url="https://example.com/",
+        gsc_property_verified_at=None,
+        encrypted_gsc_service_account_json="encrypted-test-key",
+    )
+    db = Mock(spec=["get", "commit"])
+    db.get.return_value = site
+    service = IndexingService(db=db, settings=test_settings, health_service=Mock())
+    monkeypatch.setattr(
+        service,
+        "_website_service_account_json",
+        lambda _website: json.dumps({
+            "client_email": "indexer@example-project.iam.gserviceaccount.com",
+        }),
+    )
+    monkeypatch.setattr(service, "_get_access_token", lambda _credentials: "mock-index-token")
+    response = Mock()
+    response.json.return_value = {"siteEntry": [{"siteUrl": "https://other.example/"}]}
+
+    def fake_get(*_args: Any, **_kwargs: Any) -> Mock:
+        return response
+
+    monkeypatch.setattr("app.services.indexing_service.httpx.get", fake_get)
+
+    try:
+        service.test_google_account(1)
+    except ValidationAppError as exc:
+        assert "cannot access the configured Search Console property" in exc.detail
+    else:
+        raise AssertionError("Expected inaccessible Search Console property to be rejected.")
+
+    assert site.gsc_property_verified_at is None
+    db.commit.assert_not_called()
+
+
+def test_test_account_route_requires_csrf_and_returns_verification(
+    app: Any,
+    auth_client: tuple[Any, str],
+) -> None:
+    client, csrf = auth_client
+    verified_at = datetime(2026, 11, 28)
+    service = Mock()
+    service.test_google_account.return_value = {
+        "connected": True,
+        "account_email": "indexer@example-project.iam.gserviceaccount.com",
+        "property_url": "https://example.com/",
+        "verified_at": verified_at,
+    }
+    app.dependency_overrides[get_indexing_service] = lambda: service
+
+    missing_csrf = client.post("/api/v1/indexing/websites/1/test-account")
+    response = client.post(
+        "/api/v1/indexing/websites/1/test-account",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert missing_csrf.status_code == 403
+    assert response.status_code == 200
+    assert response.json() == {
+        "connected": True,
+        "account_email": "indexer@example-project.iam.gserviceaccount.com",
+        "property_url": "https://example.com/",
+        "verified_at": "2026-11-28T00:00:00",
+    }
+    service.test_google_account.assert_called_once_with(1)
+
+
 def test_access_token_uses_uploaded_service_account_without_live_requests(
     test_settings: Settings,
     monkeypatch: Any,
@@ -199,6 +357,7 @@ def test_access_token_uses_uploaded_service_account_without_live_requests(
     assert token == "mock-index-token"
     assert requests[0][0] == "https://oauth2.googleapis.com/token"
     assert jwt_payload["iss"] == "indexer@example-project.iam.gserviceaccount.com"
+    assert jwt_payload["scope"] == "https://www.googleapis.com/auth/webmasters.readonly"
     assert jwt_payload["aud"] == "https://oauth2.googleapis.com/token"
 
 

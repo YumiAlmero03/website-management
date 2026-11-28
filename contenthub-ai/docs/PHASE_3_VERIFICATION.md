@@ -63,6 +63,8 @@ During audit execution on this host, two real bugs were identified and fixed imm
 | Mapping to website & canonical URL | PASS | Isolated MySQL + `KeywordReuseService` | `content_keywords` and `content_approvals` bind to `website_id`, `website_content_id`, and canonical URL; internal link & cannibalization helpers verified. |
 | Content approval workflow & duplicate guard | PASS | Automated Tests + Live MySQL | Single & bulk approval, reject, reopen (`needs_rereview`), unchanged rescan skipping, auto-generation strictly gated on approved post-baseline `blog_post` + approved keywords (`is_historical_baseline=False`), and duplicate URL protection verified. |
 
+**Keyword refinement update (2026-11-28):** The administrator-triggered LocalAI request now contains only the canonical page link and main-keyword exclusion instruction; it no longer sends page titles, metadata, headings, excerpts, or Python-generated candidate lists. The model returns secondary keywords only, and Python removes normalized duplicates of the main keyword. The earlier live audit above documents the prior implementation; the new URL-only prompt and filtering behavior is covered by mocked tests.
+
 ---
 
 ## Section 3 — Social Profiles, Draft Generation, Security & Frontend Audits
